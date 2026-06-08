@@ -578,14 +578,19 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
         # notifier.done() here because that shows "✅ Copy Complete!" which is
         # misleading when the job was actually stopped by the user.
         stats = bot_data.get("active_copy_stats", {})
-        c = stats.get("copied",  0)
-        s = stats.get("skipped", 0)
-        f = stats.get("failed",  0)
+        c          = stats.get("copied",      0)
+        f          = stats.get("failed",      0)
+        duplicates = stats.get("duplicates",  0)
+        deleted    = stats.get("deleted",     0)
+        non_media  = stats.get("non_media",   0)
+        unsupported= stats.get("unsupported", 0)
         cancel_text = (
             f"⛔ *Copy Job Cancelled*\n\n"
-            f"✅ Copied  : `{c:,}`\n"
-            f"⏭ Skipped : `{s:,}`\n"
-            f"❌ Failed  : `{f:,}`\n\n"
+            f"✅ Saved                    : `{c:,}`\n"
+            f"♻️ Duplicates skipped       : `{duplicates:,}`\n"
+            f"🗑 Deleted msgs skipped     : `{deleted:,}`\n"
+            f"🚫 Non-media skipped        : `{non_media:,}` (Unsupported: `{unsupported:,}`)\n"
+            f"⚠️ Errors                   : `{f:,}`\n\n"
             f"_Use /resume to continue from this point._"
         )
         try:
@@ -606,10 +611,14 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
         stats = bot_data.get("active_copy_stats", {})
         try:
             await notifier.done(
-                stats.get("copied",  0),
-                stats.get("skipped", 0),
-                stats.get("failed",  0),
-                stats.get("total",   0),
+                stats.get("copied",      0),
+                stats.get("skipped",     0),
+                stats.get("failed",      0),
+                stats.get("total",       0),
+                duplicates  = stats.get("duplicates",  0),
+                deleted     = stats.get("deleted",     0),
+                non_media   = stats.get("non_media",   0),
+                unsupported = stats.get("unsupported", 0),
             )
         except Exception:
             pass

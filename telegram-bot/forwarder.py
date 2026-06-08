@@ -1,9 +1,14 @@
 import logging
+import time
 from telegram import Update
 from telegram.ext import ContextTypes
 import database as db
 
 logger = logging.getLogger(__name__)
+
+# Record when this process started so handle_forward can skip stale messages
+# that were queued before the bot came back online.
+_STARTUP_TIME = time.time()
 
 async def load_rules_on_startup(bot_data: dict):
     """Load all active rules and ignore lists from DB into memory on startup."""
@@ -32,6 +37,16 @@ async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler that fires on every message — checks if source chat has a rule."""
     message = update.message or update.channel_post
     if not message:
+        return
+
+    # Skip messages that were queued before this process started (stale backlog).
+    # This replaces drop_pending_updates=True while keeping user commands alive.
+    msg_ts = message.date.timestamp() if message.date else 0
+    if msg_ts and msg_ts < _STARTUP_TIME - 5:
+        logger.debug(
+            "Skipping stale message %s (ts=%s, startup=%s)",
+            message.message_id, msg_ts, _STARTUP_TIME,
+        )
         return
 
     source_id  = message.chat_id

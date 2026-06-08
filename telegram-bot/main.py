@@ -21,9 +21,9 @@ def main():
     app = build_app(token)
     logger.info("Starting Telegram Forwarder Bot...")
     # run_polling manages its own event loop — do NOT wrap in asyncio.run()
-    # drop_pending_updates=True: ignore messages queued while the bot was offline.
-    # Without this, restarting the bot could trigger forward rules on old messages.
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    # drop_pending_updates=False so commands sent during a restart are NOT lost.
+    # Old channel messages are filtered by handle_forward's startup_time guard instead.
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
 
 
 if __name__ == "__main__":

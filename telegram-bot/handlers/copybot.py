@@ -7,6 +7,7 @@ Bot handlers that drive the Telethon userbot from within the PTB Telegram bot:
   /stopsync — stop the running auto-sync
   /status   — show current copy-job progress
   /stopjob  — cancel the running copy job
+  /resume   — manually restart an interrupted copy job from its last checkpoint
 """
 import asyncio
 import json
@@ -41,6 +42,10 @@ _NOTIFY_CYCLE = [100, 200, 500, 0]
 # (label, delay_seconds) — Safe is the default; avoids Telegram flood waits for large media
 _SPEED_CYCLE  = [("🛡 Safe (2s)", 2.0), ("🐢 Normal (0.35s)", 0.35), ("🚀 Fast (0.05s)", 0.05), ("⚡ Turbo (max)", 0.0)]
 MIN_EDIT_INTERVAL = 5.0
+
+# /resume inline-button callback IDs
+_RESUME_CONFIRM = "resume_confirm"
+_RESUME_CANCEL  = "resume_cancel"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -561,22 +566,32 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
             rate_delay=opts.get("rate_delay", _SPEED_CYCLE[0][1]),
         )
     except asyncio.CancelledError:
-        # Update the progress message to a final state before sending the cancel notice.
-        # Without this, the "Initializing copy…" / last-tick message is left frozen.
+        # Edit the progress message to a clear "cancelled" state — do NOT call
+        # notifier.done() here because that shows "✅ Copy Complete!" which is
+        # misleading when the job was actually stopped by the user.
         stats = bot_data.get("active_copy_stats", {})
+        c = stats.get("copied",  0)
+        s = stats.get("skipped", 0)
+        f = stats.get("failed",  0)
+        cancel_text = (
+            f"⛔ *Copy Job Cancelled*\n\n"
+            f"✅ Copied  : `{c:,}`\n"
+            f"⏭ Skipped : `{s:,}`\n"
+            f"❌ Failed  : `{f:,}`\n\n"
+            f"_Use /resume to continue from this point._"
+        )
         try:
-            await notifier.done(
-                stats.get("copied",  0),
-                stats.get("skipped", 0),
-                stats.get("failed",  0),
-                stats.get("total",   0),
+            await bot.edit_message_text(
+                cancel_text,
+                chat_id=chat_id,
+                message_id=notifier.message_id,
+                parse_mode="Markdown",
             )
         except Exception:
-            pass
-        try:
-            await bot.send_message(chat_id, "⛔ Copy job cancelled.")
-        except Exception:
-            pass
+            try:
+                await bot.send_message(chat_id, cancel_text, parse_mode="Markdown")
+            except Exception:
+                pass
     except Exception as e:
         logger.exception("Copy job error")
         # Update the progress message so it doesn't stay frozen.
@@ -601,7 +616,8 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
         _ar.clear_resume()
         bot_data["active_copy_task"]  = None
         bot_data["active_status_msg"] = None
-        bot_data.pop("active_flood_wait", None)  # clear any lingering flood-wait state
+        bot_data.pop("active_flood_wait",    None)
+        bot_data.pop("active_copy_stats",    None)  # prevent stale stats on next job start
 
 
 async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
@@ -801,6 +817,27 @@ def _build_status_text(bot_data: dict) -> str:
         )
     else:
         lines.append("\n💤 *No active job*")
+        # Show a hint if there is a saved checkpoint the user can resume from.
+        # This covers two cases:
+        #   a) autoresume.json exists — bot was killed mid-job and auto-resume
+        #      hasn't fired yet (e.g. userbot still reconnecting at startup).
+        #   b) autoresume.json is gone (job was cancelled) but the user wants
+        #      to know there's progress saved: we check the default channel pair.
+        pending = _ar.load_resume()
+        if pending:
+            p_src = pending.get("src", "?")
+            p_dst = pending.get("dst", "?")
+            lines.append(
+                f"\n💾 *Checkpoint pending:* `{p_src}` → `{p_dst}`\n"
+                f"_Use /resume to restart from last saved position._"
+            )
+        elif config.SOURCE_CHANNEL and config.DEST_CHANNEL:
+            from userbot.checkpoint import exists as _ckpt_exists
+            if _ckpt_exists(config.SOURCE_CHANNEL, config.DEST_CHANNEL):
+                lines.append(
+                    f"\n💾 *Checkpoint available* for configured channel pair.\n"
+                    f"_Use /resume to continue from last saved position._"
+                )
 
     return "\n".join(lines)
 
@@ -837,9 +874,205 @@ async def stopjob_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = context.bot_data.get("active_copy_task")
     if task and not task.done():
         task.cancel()
-        await update.message.reply_text("⛔ Cancelling copy job…")
+        # Tell the user what we just stopped — dry runs show a different label
+        await update.message.reply_text("⛔ Stopping job…")
     else:
-        await update.message.reply_text("No copy job is currently running.")
+        await update.message.reply_text(
+            "No copy job is currently running.\n"
+            "Use /status to check bot state."
+        )
+
+
+async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /resume — manually restart an interrupted copy job from its last checkpoint.
+
+    Useful when:
+      • auto-resume didn't fire (e.g. userbot took too long to connect at startup)
+      • the user wants to restart after a manual /stopjob
+
+    Priority:
+      1. autoresume.json exists  → exact src/dst/opts from the interrupted run
+      2. No autoresume.json but a checkpoint file exists for the configured channel
+         pair → use config.py defaults (Safe speed, default filter, etc.)
+      3. Nothing found           → tell the user to use /copy instead
+    """
+    bot_data = context.bot_data
+
+    # Guard: don't start if a job is already running
+    task = bot_data.get("active_copy_task")
+    if task and not task.done():
+        await update.message.reply_text(
+            "⚠️ A copy job is already running.\n"
+            "Use /status to see progress or /stopjob to cancel it."
+        )
+        return
+
+    # Userbot must be connected
+    if not bridge.is_ready(bot_data):
+        locked = bridge.is_locked(bot_data)
+        await update.message.reply_text(_not_ready(locked, False), parse_mode="Markdown")
+        return
+
+    # ── Find what to resume ──────────────────────────────────────────────────
+
+    src = dst = opts = None
+    resume_file = _ar.load_resume()
+
+    if resume_file:
+        src  = resume_file["src"]
+        dst  = resume_file["dst"]
+        opts = resume_file["opts"]
+    elif config.SOURCE_CHANNEL and config.DEST_CHANNEL:
+        from userbot.checkpoint import exists as _ckpt_exists
+        if _ckpt_exists(config.SOURCE_CHANNEL, config.DEST_CHANNEL):
+            src = config.SOURCE_CHANNEL
+            dst = config.DEST_CHANNEL
+            opts = {
+                "allowed_exts":        set(config.ALLOWED_EXTS),
+                "caption_replacement": config.CAPTION_REPLACE,
+                "notify_every":        config.NOTIFY_EVERY,
+                "skip_text":           bool(config.SKIP_TEXT),
+                "rate_delay":          _SPEED_CYCLE[0][1],   # Safe speed
+                "filter_label":        "ALL",
+            }
+
+    if src is None:
+        await update.message.reply_text(
+            "📭 *No checkpoint found.*\n\n"
+            "There is no saved progress to resume from.\n"
+            "Use /copy to start a new copy job.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── Load checkpoint stats for the confirmation message ───────────────────
+    from userbot.checkpoint import load as _ckpt_load
+    copied = last_id = 0
+    updated = "unknown"
+    try:
+        if isinstance(src, int) and isinstance(dst, int):
+            ckpt = _ckpt_load(src, dst)
+            copied   = ckpt.get("copied",      0)
+            last_id  = ckpt.get("last_msg_id", 0)
+            updated  = ckpt.get("updated_at",  "unknown") or "unknown"
+    except Exception:
+        pass  # non-critical — display falls back to zeros
+
+    # ── Human-readable speed label ────────────────────────────────────────────
+    rate_delay = opts.get("rate_delay", _SPEED_CYCLE[0][1])
+    speed_label = f"`{rate_delay}s/file`"
+    for lbl, delay in _SPEED_CYCLE:
+        if abs(delay - rate_delay) < 0.001:
+            speed_label = f"`{lbl}`"
+            break
+
+    # ── Store pending state for the confirm callback ──────────────────────────
+    context.user_data["pending_resume"] = {
+        "src":     src,
+        "dst":     dst,
+        "opts":    opts,
+        "chat_id": update.effective_chat.id,
+    }
+
+    await update.message.reply_text(
+        f"♻️ *Resume Copy Job*\n\n"
+        f"📡 `{src}` → `{dst}`\n"
+        f"📌 Progress: `{copied:,}` files copied\n"
+        f"🔖 Last msg ID: `{last_id:,}`\n"
+        f"🕐 Checkpoint: `{updated}`\n"
+        f"⏩ Speed: {speed_label}\n\n"
+        f"_Tap ▶ Resume to continue from the checkpoint._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("▶ Resume",  callback_data=_RESUME_CONFIRM),
+            InlineKeyboardButton("❌ Cancel", callback_data=_RESUME_CANCEL),
+        ]]),
+    )
+
+
+async def resume_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the ▶ Resume / ❌ Cancel buttons from /resume."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == _RESUME_CANCEL:
+        await query.edit_message_text(
+            "❌ *Cancelled.* No job was started.\n\n"
+            "Use /resume again whenever you're ready.",
+            parse_mode="Markdown",
+        )
+        context.user_data.pop("pending_resume", None)
+        return
+
+    # ── Resume confirmed ─────────────────────────────────────────────────────
+    pending = context.user_data.pop("pending_resume", None)
+    if not pending:
+        await query.edit_message_text(
+            "⚠️ *Session expired.* Please run /resume again.",
+            parse_mode="Markdown",
+        )
+        return
+
+    bot_data = context.bot_data
+
+    # Guard: a job might have started between /resume and the button tap
+    task = bot_data.get("active_copy_task")
+    if task and not task.done():
+        await query.edit_message_text(
+            "⚠️ Another copy job started while you were deciding.\n"
+            "Use /status to check it.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Userbot still needs to be connected
+    if not bridge.is_ready(bot_data):
+        await query.edit_message_text(
+            "❌ *Userbot not connected.*\n\n"
+            "Wait a moment for it to reconnect, then run /resume again.",
+            parse_mode="Markdown",
+        )
+        return
+
+    src     = pending["src"]
+    dst     = pending["dst"]
+    opts    = pending["opts"]
+    chat_id = query.message.chat_id
+    bot     = context.application.bot
+    client  = bridge.get_client(bot_data)
+
+    if client is None:
+        await query.edit_message_text(
+            "❌ *Userbot client unavailable.*\n\n"
+            "Run /resume again once it reconnects.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Write autoresume file so a crash/kill during this resumed job restarts it
+    _ar.save_resume(chat_id, src, dst, opts)
+
+    await query.edit_message_text(
+        f"▶ *Resuming copy job…*\n\n"
+        f"📡 `{src}` → `{dst}`\n\n"
+        f"_Continuing from last checkpoint._\n"
+        f"_Use /stopjob to cancel._",
+        parse_mode="Markdown",
+    )
+
+    notifier = BotProgressNotifier(
+        bot, chat_id, query.message.message_id,
+        every=opts.get("notify_every", 100),
+        bot_data=bot_data,
+    )
+
+    task = asyncio.create_task(
+        _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data)
+    )
+    bot_data["active_copy_task"]  = task
+    bot_data["active_status_msg"] = (chat_id, query.message.message_id)
+    logger.info("Manual /resume: copy task launched for src=%s dst=%s", src, dst)
 
 
 async def stopsync_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1727,6 +1960,7 @@ def get_extra_handlers() -> list:
     return [
         CommandHandler("status",    status_cmd),
         CommandHandler("stopjob",   stopjob_cmd),
+        CommandHandler("resume",    resume_cmd),
         CommandHandler("stopsync",  stopsync_cmd),
         CommandHandler("synctest",  synctest_cmd),
         CommandHandler("listchats", listchats_cmd),
@@ -1737,6 +1971,8 @@ def get_extra_handlers() -> list:
         # is NOT inside the main-menu conversation (e.g. from /status output).
         # The conv's MAIN_MENU handlers take priority when the user IS in that
         # state; these catch all other cases that would otherwise be silently dropped.
+        CallbackQueryHandler(resume_callback,       pattern=f"^{_RESUME_CONFIRM}$"),
+        CallbackQueryHandler(resume_callback,       pattern=f"^{_RESUME_CANCEL}$"),
         CallbackQueryHandler(status_callback,       pattern="^status_menu$"),
         CallbackQueryHandler(listchats_callback,    pattern="^listchats_menu$"),
         CallbackQueryHandler(clearhistory_callback, pattern="^clrhist"),

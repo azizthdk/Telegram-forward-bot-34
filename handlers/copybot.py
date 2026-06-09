@@ -497,6 +497,7 @@ async def _launch_job(query, context: ContextTypes.DEFAULT_TYPE, opts: dict, src
         )
         context.bot_data["active_copy_task"]   = task
         context.bot_data["active_status_msg"]  = (chat_id, status_msg.message_id)
+        context.bot_data["active_copy_opts"]   = opts
 
     elif mode == "sync":
         task = asyncio.create_task(
@@ -571,7 +572,7 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
             skip_text=opts["skip_text"],
             notifier=notifier,
             interactive=False,
-            rate_delay=opts.get("rate_delay", _SPEED_CYCLE[0][1]),
+            rate_delay=lambda: opts.get("rate_delay", _SPEED_CYCLE[0][1]),
         )
     except asyncio.CancelledError:
         # Edit the progress message to a clear "cancelled" state — do NOT call
@@ -635,6 +636,7 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
         bot_data["active_status_msg"] = None
         bot_data.pop("active_flood_wait",    None)
         bot_data.pop("active_copy_stats",    None)  # prevent stale stats on next job start
+        bot_data.pop("active_copy_opts",     None)
 
 
 async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
@@ -835,6 +837,15 @@ def _build_status_text(bot_data: dict) -> str:
             f"⚠️ Errors                   : `{f:,}`"
             f"{flood_line}"
         )
+        # Speed line — read live from opts so it reflects /speed changes instantly
+        active_opts = bot_data.get("active_copy_opts", {})
+        cur_delay   = active_opts.get("rate_delay", _SPEED_CYCLE[0][1])
+        speed_label = f"`{cur_delay}s/file`"
+        for lbl, delay in _SPEED_CYCLE:
+            if abs(delay - cur_delay) < 0.001:
+                speed_label = f"`{lbl}`"
+                break
+        lines.append(f"⏩ Speed: {speed_label}  _(use /speed to change)_")
     elif sync_hdlr:
         stats = bot_data.get("active_sync_stats", {})
         c = stats.get("copied",  0)
@@ -910,6 +921,48 @@ async def stopjob_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "No copy job is currently running.\n"
             "Use /status to check bot state."
         )
+
+
+async def speed_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /speed — cycle copy speed on the fly while a job is running.
+
+    Works by updating opts["rate_delay"] in bot_data; the running copy loop
+    reads it via a lambda on every message so the change takes effect
+    immediately — no restart needed.
+    """
+    bot_data = context.bot_data
+    task     = bot_data.get("active_copy_task")
+    opts     = bot_data.get("active_copy_opts")
+
+    if not task or task.done() or opts is None:
+        # No job running — just tell the user the available speeds
+        lines = ["No copy job is running. Available speeds:\n"]
+        for i, (lbl, delay) in enumerate(_SPEED_CYCLE):
+            lines.append(f"  {'▶️' if i == 0 else '  '} {lbl}")
+        lines.append("\nStart a job with /copy then use /speed to switch.")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # Cycle to the next speed
+    cur_delay = opts.get("rate_delay", _SPEED_CYCLE[0][1])
+    cur_idx   = 0
+    for i, (_, delay) in enumerate(_SPEED_CYCLE):
+        if abs(delay - cur_delay) < 0.001:
+            cur_idx = i
+            break
+    next_idx            = (cur_idx + 1) % len(_SPEED_CYCLE)
+    new_label, new_delay = _SPEED_CYCLE[next_idx]
+
+    # Mutate opts in-place — the running lambda picks this up on the next message
+    opts["rate_delay"] = new_delay
+    opts["speed_idx"]  = next_idx
+
+    await update.message.reply_text(
+        f"⏩ Speed changed to *{new_label}*\n"
+        f"_Takes effect on the next message (no restart needed)._",
+        parse_mode="Markdown",
+    )
 
 
 async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1989,6 +2042,7 @@ def get_extra_handlers() -> list:
     return [
         CommandHandler("status",    status_cmd),
         CommandHandler("stopjob",   stopjob_cmd),
+        CommandHandler("speed",     speed_cmd),
         CommandHandler("resume",    resume_cmd),
         CommandHandler("stopsync",  stopsync_cmd),
         CommandHandler("synctest",  synctest_cmd),

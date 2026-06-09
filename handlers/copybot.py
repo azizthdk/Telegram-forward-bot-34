@@ -923,6 +923,49 @@ async def stopjob_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def exportsession_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /exportsession — export the current Telethon session as a portable string.
+
+    The string is sent ONLY in the Telegram chat (never logged), so you can
+    copy it and set it as SESSION_STRING env var on Render/Railway/Koyeb.
+    The bot will use the string instead of the session FILE, surviving restarts
+    on platforms with ephemeral filesystems.
+
+    ⚠️  Treat this string like a password — it gives full account access.
+    Delete the Telegram message after copying it.
+    """
+    from userbot_bridge import get_client
+    client = get_client(context.bot_data)
+    if not client:
+        await update.message.reply_text("❌ Userbot not connected — can't export session.")
+        return
+    try:
+        from telethon.sessions import StringSession
+        session_string = StringSession.save(client.session)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Export failed: {e}")
+        return
+
+    # Delete the command message so the command itself isn't sitting in the chat
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await context.bot.send_message(
+        update.effective_chat.id,
+        f"🔑 *Your SESSION\\_STRING* (treat like a password!):\n\n"
+        f"`{session_string}`\n\n"
+        f"*How to use on Render/Railway/Koyeb:*\n"
+        f"1\\. Copy the string above\n"
+        f"2\\. Add env var `SESSION_STRING` = \\(the string\\)\n"
+        f"3\\. The bot will use it instead of the session file\n\n"
+        f"⚠️ *Delete this message after copying\\!*",
+        parse_mode="MarkdownV2",
+    )
+
+
 async def speed_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /speed — cycle copy speed on the fly while a job is running.
@@ -2041,8 +2084,9 @@ def get_extra_handlers() -> list:
     """Standalone command handlers registered outside the conversation."""
     return [
         CommandHandler("status",    status_cmd),
-        CommandHandler("stopjob",   stopjob_cmd),
-        CommandHandler("speed",     speed_cmd),
+        CommandHandler("stopjob",       stopjob_cmd),
+        CommandHandler("speed",         speed_cmd),
+        CommandHandler("exportsession", exportsession_cmd),
         CommandHandler("resume",    resume_cmd),
         CommandHandler("stopsync",  stopsync_cmd),
         CommandHandler("synctest",  synctest_cmd),

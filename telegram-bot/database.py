@@ -2,7 +2,13 @@ import aiosqlite
 import os
 from typing import Optional
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "data", "forwarder.db")
+# DB_PATH can be overridden via environment variable.
+# On Railway: add a volume mounted at /data and set DB_PATH=/data/forwarder.db
+# so your forward rules survive redeployments.
+DB_PATH = os.environ.get(
+    "DB_PATH",
+    os.path.join(os.path.dirname(__file__), "data", "forwarder.db"),
+)
 
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -19,8 +25,6 @@ async def init_db():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Unique index — safe to run on both new and existing tables.
-        # Prevents duplicate (user, source, dest) rules accumulating in the DB.
         await db.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_fwd_rules_unique
             ON forward_rules(user_id, source_chat_id, dest_chat_id)
@@ -47,7 +51,6 @@ async def add_rule(user_id: int, source_id: int, source_name: str, dest_id: int,
         await db.commit()
         if cursor.lastrowid:
             return cursor.lastrowid
-        # Rule already existed — return its id
         cur2 = await db.execute(
             "SELECT id FROM forward_rules WHERE user_id=? AND source_chat_id=? AND dest_chat_id=?",
             (user_id, source_id, dest_id)
@@ -82,7 +85,6 @@ async def get_all_active_rules() -> list:
         return [dict(row) for row in await cursor.fetchall()]
 
 async def add_ignore(user_id: int, chat_id: int, chat_name: str) -> bool:
-    """Returns True if added, False if already in list."""
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "SELECT id FROM ignore_list WHERE user_id=? AND chat_id=?",
@@ -116,7 +118,6 @@ async def remove_ignore(ignore_id: int, user_id: int) -> bool:
         return cursor.rowcount > 0
 
 async def get_all_ignore_entries() -> list:
-    """Load every ignore-list entry across all users — used to build the in-memory ignore_map."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(

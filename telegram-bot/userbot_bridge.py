@@ -87,6 +87,7 @@ async def _connect_loop(bot_data: dict, slot: int = 1) -> None:
     key_client  = "userbot_client"  if slot == 1 else "userbot2_client"
     key_ready   = "userbot_ready"   if slot == 1 else "userbot2_ready"
     key_locked  = "userbot_locked"  if slot == 1 else "userbot2_locked"
+    key_ts      = "userbot_connected_at" if slot == 1 else "userbot2_connected_at"
     session     = SESSION_PATH      if slot == 1 else SESSION2_PATH
     label       = "Userbot"         if slot == 1 else "Userbot2"
 
@@ -139,6 +140,7 @@ async def _connect_loop(bot_data: dict, slot: int = 1) -> None:
             me = await client.get_me()
             bot_data[key_client] = client
             bot_data[key_ready]  = True
+            bot_data[key_ts]     = __import__("time").time()
             logger.info(f"{label} bridge connected as {me.first_name} (@{me.username})")
 
             while True:
@@ -243,7 +245,7 @@ async def await_client(bot_data: dict, slot: int = 1, timeout: float = 10.0):
     """
     import asyncio
     getter = get_client if slot == 1 else get_client2
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         client = getter(bot_data)
@@ -356,3 +358,4 @@ async def import_string_session(session_str: str, slot: int, bot_data: dict):
         f"{me.first_name} (@{me.username}) — reconnect task started"
     )
     return me
+

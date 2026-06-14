@@ -1870,21 +1870,50 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── 2. Sync must be running ──────────────────────────────────────────────
-    if bot_data.get("active_sync_handler") is None:
+    # ── 2. Parse optional inline channel IDs: /synctest -100123 -100456 ──────
+    args       = context.args or []
+    inline_src: int | None = None
+    inline_dst: int | None = None
+
+    if len(args) == 1:
+        await update.message.reply_text(
+            "⚠️ Provide *both* source and destination IDs.\n\n"
+            "Example: `/synctest \\-1001234567890 \\-1009876543210`",
+            parse_mode="Markdown",
+        )
+        return
+    elif len(args) >= 2:
+        try:
+            inline_src = int(args[0])
+            inline_dst = int(args[1])
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ *Invalid channel IDs.*\n\n"
+                "Usage: `/synctest \\-1001234567890 \\-1009876543210`\n"
+                "Channel IDs are negative integers (e.g. `-1001234567890`).",
+                parse_mode="Markdown",
+            )
+            return
+
+    sync_running = bot_data.get("active_sync_handler") is not None
+
+    # ── 3. Sync must be running — unless inline channels were supplied ─────────
+    if inline_src is None and not sync_running:
         await update.message.reply_text(
             "❌ *Auto-sync is not running.*\n\n"
-            "Start it with /sync first, then run /synctest to confirm it's live.",
+            "Start it with /sync first, then run /synctest to confirm it's live.\n\n"
+            "💡 Or probe any channel pair directly (no sync needed):\n"
+            "`/synctest \\-1001234567890 \\-1009876543210`",
             parse_mode="Markdown",
         )
         return
 
-    # ── 3. Pre-flight: check if active filter would swallow a text probe ─────
+    # ── 4. Pre-flight: filter check (only when sync is running, no inline) ────
     opts       = bot_data.get("active_sync_opts", {})
     skip_text  = opts.get("skip_text", False)
     allowed_ex = opts.get("allowed_exts", set())
 
-    if skip_text or allowed_ex:
+    if inline_src is None and (skip_text or allowed_ex):
         reason = (
             "text-only messages are being *skipped*"
             if skip_text
@@ -1900,14 +1929,39 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     client = bridge.get_client(bot_data)
-    src    = bot_data.get("active_sync_src") or config.SOURCE_CHANNEL
-    dst    = bot_data.get("active_sync_dst") or config.DEST_CHANNEL
+    src    = inline_src or bot_data.get("active_sync_src") or config.SOURCE_CHANNEL
+    dst    = inline_dst or bot_data.get("active_sync_dst") or config.DEST_CHANNEL
 
     if not src or not dst:
         await update.message.reply_text(
             "❌ *Cannot run synctest.*\n\n"
             "Source or destination channel not configured.\n"
-            "Start a sync job with /sync first, or set SOURCE\_CHANNEL/DEST\_CHANNEL.",
+            "• Start a sync job: /sync\n"
+            "• Or probe directly: `/synctest \\-1001234567890 \\-1009876543210`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── Connectivity-only mode: inline channels given but sync not running ────
+    if inline_src is not None and not sync_running:
+        status = await update.message.reply_text(
+            "🔬 *Channel Connectivity Check*\n\n⏳ Checking…",
+            parse_mode="Markdown",
+        )
+        results = []
+        for label, cid in [("Source", src), ("Destination", dst)]:
+            try:
+                ent  = await client.get_entity(cid)
+                name = (getattr(ent, "title", None)
+                        or getattr(ent, "username", None)
+                        or str(cid))
+                results.append(f"✅ {label}: *{name}* (`{cid}`)")
+            except Exception as e:
+                results.append(f"❌ {label} `{cid}`: `{e}`")
+        await status.edit_text(
+            "🔬 *Channel Connectivity Check*\n\n"
+            + "\n".join(results)
+            + "\n\n_Start /sync to run a full live probe._",
             parse_mode="Markdown",
         )
         return

@@ -126,7 +126,7 @@ def main():
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            app = build_app(token)
+            app = build_app(_tok)
             logger.info(
                 "Starting Telegram Forwarder Bot… (attempt %d/%d)",
                 attempt, MAX_RETRIES,

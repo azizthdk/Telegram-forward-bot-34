@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -37,9 +38,15 @@ from states import (
 
 logger = logging.getLogger(__name__)
 
+# Recorded when this module is first imported — used by /uptime to show
+# true process uptime rather than time since post_init (which runs ~1s later).
+_BOT_START_TIME = time.time()
+
 
 async def post_init(application: Application):
     """Called after the application is initialized."""
+    # Store start time so /uptime can read it from bot_data without importing bot.py
+    application.bot_data.setdefault("bot_start_time", _BOT_START_TIME)
     await db.init_db()
     await forwarder.load_rules_on_startup(application.bot_data)
     await userbot_bridge.init_userbot(application)
@@ -148,7 +155,8 @@ def build_app(token: str) -> Application:
     app.add_handler(copy_conv)
     app.add_handler(login_conv)
     app.add_handler(conv)
-    app.add_handler(CommandHandler("help", menu_handler.help_cmd))
+    app.add_handler(CommandHandler("help",   menu_handler.help_cmd))
+    app.add_handler(CommandHandler("uptime", menu_handler.uptime_cmd))
 
     # Standalone userbot control commands
     for h in copybot_handler.get_extra_handlers():

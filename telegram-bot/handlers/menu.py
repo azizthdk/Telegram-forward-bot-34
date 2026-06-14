@@ -91,15 +91,6 @@ async def uptime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         ub1_uptime = "_not connected_"
 
-    # ── Userbot 2 uptime ──────────────────────────────────────────────────────
-    ub2_at = bd.get("userbot2_connected_at")
-    if ub2_at:
-        ub2_uptime = f"`{_fmt_duration(now - ub2_at)}`"
-    elif bd.get("userbot2_ready"):
-        ub2_uptime = "`connected (time unknown)`"
-    else:
-        ub2_uptime = "_not connected_"
-
     # ── Active job info ───────────────────────────────────────────────────────
     copy_task = bd.get("active_copy_task")
     sync_task = bd.get("active_sync_task")
@@ -113,8 +104,7 @@ async def uptime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "⏱ *Bot Uptime*\n\n"
         f"🤖 Bot process : {bot_uptime}\n"
-        f"👤 Userbot 1   : {ub1_uptime}\n"
-        f"👥 Userbot 2   : {ub2_uptime}\n\n"
+        f"👤 Userbot     : {ub1_uptime}\n\n"
         f"{job_line}"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -149,7 +139,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /history — Show copy job statistics for each channel pair\n"
         "• /clearhistory — Delete checkpoint files so a pair can be re-copied\n"
         "• /config — Show current bot configuration\n"
-        "• /uptime — Show how long the bot and userbot have been running\n\n"
+        "• /uptime — Show how long the bot and userbot have been running\n"
+        "• /logs [N] — Show the last N log lines for crash diagnostics\n\n"
         "*Important:*\n"
         "• The bot must be an *admin* in destination chats for forwarding.\n"
         "• For /copy and /sync you only need to be a *member* of the source channel.\n"

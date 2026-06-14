@@ -1986,9 +1986,47 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /logs [N] — show the last N captured log lines (default 25, max 50).
+    Useful for debugging crashes without needing Railway's console.
+    """
+    import log_buffer
+
+    args = context.args or []
+    n = 25
+    if args:
+        try:
+            n = max(1, min(50, int(args[0])))
+        except ValueError:
+            await update.message.reply_text("Usage: /logs [number]  e.g. /logs 30")
+            return
+
+    lines = log_buffer.get_lines(n)
+    if not lines:
+        await update.message.reply_text("\U0001f4ed No log lines captured yet.")
+        return
+
+    header   = f"\U0001f4cb *Last {len(lines)} log lines:*\n\n"
+    body     = "\n".join(lines)
+    raw_text = header + f"```\n{body}\n```"
+
+    # Telegram hard-limit is 4096 chars — trim oldest lines to fit
+    if len(raw_text) > 4000:
+        max_body = 4000 - len(header) - 8   # 8 for ``` markers + newlines
+        body = body[-max_body:]
+        nl = body.find("\n")
+        if nl >= 0:
+            body = body[nl + 1:]
+        raw_text = header + f"```\n{body}\n```"
+
+    await update.message.reply_text(raw_text, parse_mode="Markdown")
+
+
 def get_extra_handlers() -> list:
     """Standalone command handlers registered outside the conversation."""
     return [
+        CommandHandler("logs",      logs_cmd),
         CommandHandler("status",    status_cmd),
         CommandHandler("stopjob",   stopjob_cmd),
         CommandHandler("resume",    resume_cmd),

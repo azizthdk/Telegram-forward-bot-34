@@ -8,3 +8,9 @@ healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "always"
 restartPolicyMaxRetries = 10
+
+# ── Required environment variables ───────────────────────────────────────────
+# Set these in Railway → your service → Variables tab.
+# See .env.example for descriptions of each variable.
+[deploy.envCheck]
+required = ["TELEGRAM_BOT_TOKEN"]

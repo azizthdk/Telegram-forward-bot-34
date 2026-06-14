@@ -2080,6 +2080,133 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  /login2_status — show Bot 2 session info for pre-flight /dualcopy check
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds to a human-readable duration string."""
+    seconds = int(seconds)
+    days, rem   = divmod(seconds, 86400)
+    hours, rem  = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:    parts.append(f"{days}d")
+    if hours:   parts.append(f"{hours}h")
+    if minutes: parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+async def login2_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /login2_status — display Bot 2 session info.
+
+    Shows: account name, username, phone, Telegram DC, session type,
+    and how long the second userbot has been connected.
+    Useful for verifying the second account before launching /dualcopy.
+    """
+    bot_data = context.bot_data
+    now      = time.time()
+
+    if not bridge.is_ready2(bot_data):
+        locked = bridge.is_locked2(bot_data) if hasattr(bridge, "is_locked2") else False
+        if locked:
+            msg = (
+                "⏳ *Userbot 2 is connecting…*
+
+"
+                "Session file is locked — retrying automatically.
+"
+                "Try again in ~30 seconds."
+            )
+        elif bot_data.get("userbot2_client") is not None:
+            msg = (
+                "🔑 *Userbot 2 client exists but is not authorised.*
+
+"
+                "Use /login2 to sign in with your second Telegram account."
+            )
+        else:
+            msg = (
+                "❌ *Userbot 2 is not connected.*
+
+"
+                "Use /login2 to connect your second account before running /dualcopy."
+            )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+
+    client = bridge.get_client2(bot_data)
+    if client is None:
+        await update.message.reply_text(
+            "⚠️ *Userbot 2 is marked ready but client object is missing.*\n\n"
+            "This is a transient state — please wait a moment and try again.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── Fetch account info ────────────────────────────────────────────────────
+    try:
+        me = await client.get_me()
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ *Could not fetch Bot 2 account info:* `{e}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    name   = (me.first_name or "") + (" " + me.last_name if me.last_name else "")
+    uname  = f"@{me.username}" if me.username else "_no username_"
+    phone  = f"`+{me.phone}`" if me.phone else "_hidden_"
+
+    # ── DC number ─────────────────────────────────────────────────────────────
+    try:
+        dc_id = client.session.dc_id
+        dc_line = f"`DC{dc_id}`"
+    except Exception:
+        dc_line = "_unknown_"
+
+    # ── Session type: string env-var or on-disk file ──────────────────────────
+    session_type = (
+        "📋 String session (from `SESSION_STRING_2` env var)"
+        if os.environ.get("SESSION_STRING_2")
+        else "💾 File session (`sessions/userbot2.session`)"
+    )
+
+    # ── Uptime ────────────────────────────────────────────────────────────────
+    connected_at = bot_data.get("userbot2_connected_at")
+    if connected_at:
+        uptime_str = f"`{_fmt_duration(now - connected_at)}`"
+    else:
+        uptime_str = "_unknown_"
+
+    # ── Bot 1 status for context ──────────────────────────────────────────────
+    bot1_line = (
+        "✅ Connected"
+        if bridge.is_ready(bot_data)
+        else "❌ Not connected — use /login"
+    )
+
+    text = (
+        "👤 *Userbot 2 — Session Info*\n\n"
+        f"✅ *Status:* Connected\n"
+        f"📛 *Name:*  `{name.strip()}`\n"
+        f"🔖 *Username:* {uname}\n"
+        f"📱 *Phone:* {phone}\n"
+        f"🌐 *Telegram DC:* {dc_line}\n"
+        f"💾 *Session:* {session_type}\n"
+        f"⏱ *Connected for:* {uptime_str}\n\n"
+        f"🤖 *Userbot 1:* {bot1_line}\n\n"
+        + (
+            "🚀 Both accounts ready — you can use /dualcopy!"
+            if bridge.is_ready(bot_data)
+            else "⚠️ Connect Userbot 1 with /login to enable /dualcopy."
+        )
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 def get_extra_handlers() -> list:
     """Standalone command handlers registered outside the conversation."""
     return [
@@ -2094,6 +2221,7 @@ def get_extra_handlers() -> list:
         CommandHandler("history",       copystats_cmd),
         CommandHandler("clearhistory",  clearhistory_cmd),
         CommandHandler("config",        config_cmd),
+        CommandHandler("login2_status",  login2_status_cmd),
         # Bare callback handlers so these buttons work even when the user
         # is NOT inside the main-menu conversation (e.g. from /status output).
         # The conv's MAIN_MENU handlers take priority when the user IS in that
@@ -2104,3 +2232,4 @@ def get_extra_handlers() -> list:
         CallbackQueryHandler(listchats_callback,    pattern="^listchats_menu$"),
         CallbackQueryHandler(clearhistory_callback, pattern="^clrhist"),
     ]
+

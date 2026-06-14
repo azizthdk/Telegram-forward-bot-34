@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import warnings
 
 warnings.filterwarnings("ignore", message="If 'per_message=False'", category=UserWarning)
@@ -38,11 +39,9 @@ class _HealthHandler:
 def _start_health_server() -> bool:
     """
     Bind the health-check TCP socket and start a background thread.
-    Returns True on success, False if the port is already in use.
-
-    IMPORTANT: the socket is bound here (before thread.start) so that
-    Railway's probe gets a valid response the instant the process starts —
-    not after a thread-scheduling delay.
+    IMPORTANT: bound before thread.start so Railway's probe gets an immediate
+    200 OK even before the bot finishes connecting.
+    daemon=True: health thread must NOT keep the process alive after main exits.
     """
     import socket
 
@@ -65,8 +64,6 @@ def _start_health_server() -> bool:
             except Exception:
                 pass
 
-    # daemon=True: health thread must NOT keep the process alive after a crash —
-    # Railway needs the process to exit so it can restart it automatically.
     t = threading.Thread(target=_serve, daemon=True, name="health-server")
     t.start()
     return True
@@ -74,21 +71,16 @@ def _start_health_server() -> bool:
 
 def main():
     # ── 1. Bind health server FIRST ──────────────────────────────────────────
-    # Do this before ANY other import so Railway's probe never gets
-    # "connection refused", even if the bot fails to start.
     if not _start_health_server():
-        logger.critical("Cannot bind health server — exiting with code 1")
+        logger.critical("Cannot bind health server — exiting")
         sys.exit(1)
 
-    # ── 2. NOW import bot code ────────────────────────────────────────────────
-    # Moving imports here means a missing dependency or bad env var never
-    # prevents the health server from binding.
+    # ── 2. Import bot code ────────────────────────────────────────────────────
     try:
         from bot import build_app
         from telegram import Update
     except Exception as exc:
         logger.critical("Import error — bot will NOT start: %s", exc, exc_info=True)
-        # Exit non-zero so Railway restarts and the error stays visible in logs.
         sys.exit(1)
 
     # ── 3. Check required env vars ────────────────────────────────────────────
@@ -96,27 +88,70 @@ def main():
     if not token:
         logger.critical(
             "TELEGRAM_BOT_TOKEN is not set. "
-            "Add it as an environment variable in Railway and redeploy."
+            "Add it in Railway → Variables and redeploy."
         )
         sys.exit(1)
 
-    api_id   = os.environ.get("TELEGRAM_API_ID", "0")
-    api_hash = os.environ.get("TELEGRAM_API_HASH", "")
-    if api_id == "0" or not api_hash:
+    if os.environ.get("TELEGRAM_API_ID", "0") == "0":
         logger.warning(
             "TELEGRAM_API_ID / TELEGRAM_API_HASH not set — "
             "userbot features (/copy, /sync, /dualcopy) will be disabled."
         )
 
-    # ── 4. Build and run ──────────────────────────────────────────────────────
-    try:
-        app = build_app(token)
-        logger.info("Starting Telegram Forwarder Bot…")
-        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
-    except Exception as exc:
-        logger.critical("Bot crashed: %s", exc, exc_info=True)
-        # Exit non-zero → Railway restarts the process automatically.
-        sys.exit(1)
+    # ── 4. Run with automatic retry on transient errors ───────────────────────
+    # Retries handle: Telegram Conflict (old instance still polling),
+    # network blips at startup, and other transient failures.
+    # A non-transient crash (bad token, import error) exits with code 1
+    # so Railway can surface it in logs and restart cleanly.
+    MAX_RETRIES   = 5
+    RETRY_DELAY   = 10   # seconds between retries
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            app = build_app(token)
+            logger.info(
+                "Starting Telegram Forwarder Bot… (attempt %d/%d)",
+                attempt, MAX_RETRIES,
+            )
+            # drop_pending_updates=True clears the message backlog so the bot
+            # doesn't try to process a flood of old /start commands on restart.
+            app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
+            # run_polling returned cleanly — exit normally
+            logger.info("Bot stopped cleanly.")
+            sys.exit(0)
+
+        except Exception as exc:
+            err = str(exc)
+            is_conflict = "conflict" in err.lower() or "terminated by other" in err.lower()
+            is_bad_token = "unauthorized" in err.lower() or "invalid token" in err.lower()
+
+            if is_bad_token:
+                logger.critical(
+                    "Invalid TELEGRAM_BOT_TOKEN — check Railway Variables: %s", exc
+                )
+                sys.exit(1)
+
+            if attempt < MAX_RETRIES:
+                if is_conflict:
+                    logger.warning(
+                        "Telegram conflict (another bot instance is polling). "
+                        "Waiting %ds then retrying… (%d/%d)",
+                        RETRY_DELAY, attempt, MAX_RETRIES,
+                    )
+                else:
+                    logger.error(
+                        "Bot error on attempt %d/%d: %s — retrying in %ds",
+                        attempt, MAX_RETRIES, exc, RETRY_DELAY, exc_info=True,
+                    )
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.critical(
+                    "Bot failed after %d attempts: %s", MAX_RETRIES, exc, exc_info=True
+                )
+                sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -117,15 +117,23 @@ async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
                 reply_markup=_menu_kb(),
             )
-        else:
+            return ConversationHandler.END
+        # Background connect task is still running — wait up to 10 s for it
+        await _reply(
+            "⏳ *Connecting…*\n\n"
+            "The Telegram client is starting up. Please wait a moment…",
+            parse_mode="Markdown",
+        )
+        client = await bridge.await_client(context.bot_data, slot=1, timeout=10.0)
+        if client is None:
             await _reply(
-                "⏳ *Userbot is still initialising…*\n\n"
-                "The client is connecting in the background. "
-                "Please wait a few seconds and try again.",
+                "❌ *Could not connect to Telegram.*\n\n"
+                "Check that `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are set "
+                "correctly in Railway Variables, then restart the bot.",
                 parse_mode="Markdown",
                 reply_markup=_menu_kb(),
             )
-        return ConversationHandler.END
+            return ConversationHandler.END
 
     await _reply(
         "📱 *Userbot Login*\n\n"
@@ -476,4 +484,5 @@ def build_login_conv() -> ConversationHandler:
         per_user=True,
         per_message=False,
     )
+
 

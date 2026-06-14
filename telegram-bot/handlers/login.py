@@ -417,7 +417,7 @@ async def _login_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *Logged in as {name} ({uname})!*\n\n"
         "All userbot features are now active. Use /menu to get started.",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(userbot_ready=True),
+        reply_markup=main_menu_keyboard(userbot_ready=True, userbot2_ready=bridge.is_ready2(context.bot_data)),
     )
 
     # Send the session string as a separate message
@@ -476,3 +476,4 @@ def build_login_conv() -> ConversationHandler:
         per_user=True,
         per_message=False,
     )
+

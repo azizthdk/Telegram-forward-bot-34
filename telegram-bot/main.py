@@ -83,7 +83,26 @@ def main():
     # error on restart should not kill the bot. Railway/Render retries probes.
     _start_health_server()
 
-    # ── 2. Import bot code ────────────────────────────────────────────────────
+    # ── 2. Diagnose env vars BEFORE importing bot code ────────────────────────
+    # These log lines appear in Railway's console and make it obvious which
+    # variable is missing when the bot fails to start.
+    _tok    = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    _api_id = os.environ.get("TELEGRAM_API_ID",    "")
+    _api_h  = os.environ.get("TELEGRAM_API_HASH",  "")
+    logger.info(
+        "Env check — BOT_TOKEN:%s  API_ID:%s  API_HASH:%s",
+        "SET" if _tok    else "*** MISSING ***",
+        "SET" if _api_id else "not set (userbot disabled)",
+        "SET" if _api_h  else "not set (userbot disabled)",
+    )
+    if not _tok:
+        logger.critical(
+            "TELEGRAM_BOT_TOKEN is not set — bot cannot start. "
+            "Go to Railway → your service → Variables and add it."
+        )
+        sys.exit(1)
+
+    # ── 3. Import bot code ────────────────────────────────────────────────────
     try:
         from bot import build_app
         from telegram import Update
@@ -91,16 +110,7 @@ def main():
         logger.critical("Import error — bot will NOT start: %s", exc, exc_info=True)
         sys.exit(1)
 
-    # ── 3. Check required env vars ────────────────────────────────────────────
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        logger.critical(
-            "TELEGRAM_BOT_TOKEN is not set. "
-            "Add it in Railway → Variables and redeploy."
-        )
-        sys.exit(1)
-
-    if os.environ.get("TELEGRAM_API_ID", "0") == "0":
+    if not _api_id:
         logger.warning(
             "TELEGRAM_API_ID / TELEGRAM_API_HASH not set — "
             "userbot features (/copy, /sync, /dualcopy) will be disabled."

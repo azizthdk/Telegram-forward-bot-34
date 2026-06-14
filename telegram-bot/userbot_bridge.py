@@ -231,6 +231,28 @@ def is_locked2(bot_data: dict) -> bool:
 def both_ready(bot_data: dict) -> bool:
     return is_ready(bot_data) and is_ready2(bot_data)
 
+async def await_client(bot_data: dict, slot: int = 1, timeout: float = 10.0):
+    """
+    Wait up to `timeout` seconds for the Telethon client object to be created
+    by the background _connect_loop task.
+
+    Returns the client object as soon as it appears, or None if the timeout
+    expires first.  Called by login handlers so they never show "still
+    initialising" just because the user tapped the button in the first few
+    seconds after a Railway cold-start.
+    """
+    import asyncio
+    getter = get_client if slot == 1 else get_client2
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        client = getter(bot_data)
+        if client is not None:
+            return client
+        await asyncio.sleep(0.5)
+    return None
+
+
 
 # ── String-session import ──────────────────────────────────────────────────────
 

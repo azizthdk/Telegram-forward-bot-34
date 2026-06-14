@@ -6,7 +6,7 @@ import logging
 # Add parent dir to path so we can import from telegram-bot/
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from userbot import UserBot
+from userbot.bot import UserBot
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

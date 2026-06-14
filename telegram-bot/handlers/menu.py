@@ -1,3 +1,4 @@
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from states import MAIN_MENU
@@ -32,6 +33,23 @@ def _ready(context) -> bool:
     return bridge.is_ready(context.bot_data)
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Format a duration in seconds to a human-readable string."""
+    seconds = int(seconds)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         MAIN_MENU_TEXT,
@@ -50,6 +68,56 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_keyboard(_ready(context)),
     )
     return MAIN_MENU
+
+
+async def uptime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show how long the bot and userbots have been running."""
+    now = time.time()
+    bd  = context.bot_data
+
+    # ── Bot process uptime ────────────────────────────────────────────────────
+    bot_start = bd.get("bot_start_time")
+    if bot_start:
+        bot_uptime = f"`{_fmt_duration(now - bot_start)}`"
+    else:
+        bot_uptime = "_unknown_"
+
+    # ── Userbot 1 uptime ──────────────────────────────────────────────────────
+    ub1_at = bd.get("userbot_connected_at")
+    if ub1_at:
+        ub1_uptime = f"`{_fmt_duration(now - ub1_at)}`"
+    elif bd.get("userbot_ready"):
+        ub1_uptime = "`connected (time unknown)`"
+    else:
+        ub1_uptime = "_not connected_"
+
+    # ── Userbot 2 uptime ──────────────────────────────────────────────────────
+    ub2_at = bd.get("userbot2_connected_at")
+    if ub2_at:
+        ub2_uptime = f"`{_fmt_duration(now - ub2_at)}`"
+    elif bd.get("userbot2_ready"):
+        ub2_uptime = "`connected (time unknown)`"
+    else:
+        ub2_uptime = "_not connected_"
+
+    # ── Active job info ───────────────────────────────────────────────────────
+    copy_task = bd.get("active_copy_task")
+    sync_task = bd.get("active_sync_task")
+    if copy_task and not copy_task.done():
+        job_line = "📋 Copy job: `running`"
+    elif sync_task and not sync_task.done():
+        job_line = "🔄 Sync job: `running`"
+    else:
+        job_line = "💤 No active job"
+
+    text = (
+        "⏱ *Bot Uptime*\n\n"
+        f"🤖 Bot process : {bot_uptime}\n"
+        f"👤 Userbot 1   : {ub1_uptime}\n"
+        f"👥 Userbot 2   : {ub2_uptime}\n\n"
+        f"{job_line}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,6 +141,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /stopsync — Stop the running auto-sync\n"
         "• /status — Check current copy job progress\n"
         "• /stopjob — Cancel the running copy job\n\n"
+        "*Dual-bot parallel copy (2× speed):*\n"
+        "• /login2 — Connect your second Telegram account\n"
+        "• /dualcopy — Copy using both accounts simultaneously (~2× speed)\n"
+        "• /status2 — Live per-bot progress breakdown (Bot 1 vs Bot 2)\n"
+        "• /stopdual — Cancel the running dual-copy job\n\n"
+        "*Utility:*\n"
+        "• /uptime — Show how long the bot and userbots have been running\n\n"
         "*Important:* The bot must be an admin in destination chats.\n"
         "For /copy and /sync, you only need to be a *member* of the source channel."
     )

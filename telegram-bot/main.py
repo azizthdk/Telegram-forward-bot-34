@@ -42,6 +42,10 @@ def _start_health_server() -> bool:
     IMPORTANT: bound before thread.start so Railway's probe gets an immediate
     200 OK even before the bot finishes connecting.
     daemon=True: health thread must NOT keep the process alive after main exits.
+
+    Returns False if binding fails (e.g. port already in use on restart).
+    The bot continues running even if the health server can't bind — a brief
+    gap is acceptable; Railway/Render will retry the health check shortly.
     """
     import socket
 
@@ -53,7 +57,7 @@ def _start_health_server() -> bool:
         srv.listen(16)
         logger.info("Health server bound on 0.0.0.0:%d", port)
     except OSError as exc:
-        logger.error("Health server could not bind to port %d: %s", port, exc)
+        logger.warning("Health server could not bind to port %d: %s — continuing without it", port, exc)
         return False
 
     def _serve():
@@ -71,9 +75,9 @@ def _start_health_server() -> bool:
 
 def main():
     # ── 1. Bind health server FIRST ──────────────────────────────────────────
-    if not _start_health_server():
-        logger.critical("Cannot bind health server — exiting")
-        sys.exit(1)
+    # NOTE: We do NOT exit if the server can't bind — a transient port-in-use
+    # error on restart should not kill the bot. Railway/Render retries probes.
+    _start_health_server()
 
     # ── 2. Import bot code ────────────────────────────────────────────────────
     try:

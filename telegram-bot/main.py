@@ -74,6 +74,10 @@ def _start_health_server() -> bool:
 
 
 def main():
+    # ── 0. Start in-memory log buffer so /logs works immediately ─────────────
+    import log_buffer
+    log_buffer.setup()
+
     # ── 1. Bind health server FIRST ──────────────────────────────────────────
     # NOTE: We do NOT exit if the server can't bind — a transient port-in-use
     # error on restart should not kill the bot. Railway/Render retries probes.

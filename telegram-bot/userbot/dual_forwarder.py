@@ -285,18 +285,18 @@ async def _copy_range(
                             shared_stats["copied"] += 1
                             state["last_msg_id"] = max(state["last_msg_id"], message.id)
                             state["copied_ids"].add(message.id)
-                        elif result == "skip":
-                            shared_stats["skipped"] += 1
-                        else:
+                        elif result == "fail":
                             shared_stats["failed"] += 1
+                        else:  # "skip", "skip_unsupported", "skip_deleted"
+                            shared_stats["skipped"] += 1
 
                     # own_stats — no lock, only this worker writes it
                     if result == "ok":
                         own_stats["copied"] += 1
-                    elif result == "skip":
-                        own_stats["skipped"] += 1
-                    else:
+                    elif result == "fail":
                         own_stats["failed"] += 1
+                    else:  # "skip", "skip_unsupported", "skip_deleted"
+                        own_stats["skipped"] += 1
 
                 processed += 1
 

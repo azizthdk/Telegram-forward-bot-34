@@ -19,16 +19,16 @@ def _int_env(key: str, default: int) -> int:
 
 # ── Source channel (where files are copied FROM) ─────────────────────────────
 # Set SOURCE_CHANNEL env var on Railway, e.g. -1001811670072
-SOURCE_CHANNEL: int = _int_env("SOURCE_CHANNEL", -1001811670072)
+SOURCE_CHANNEL: int = _int_env("SOURCE_CHANNEL", 0)
 
 # ── Destination channel (where files are copied TO) ──────────────────────────
 # Set DEST_CHANNEL env var on Railway, e.g. -1003563437550
-DEST_CHANNEL: int = _int_env("DEST_CHANNEL", -1003563437550)
+DEST_CHANNEL: int = _int_env("DEST_CHANNEL", 0)
 
 # ── Your channel link — replaces ALL @usernames AND t.me links in captions ───
 # Set CAPTION_REPLACE env var, e.g. "@BackupChannel5211"
 # Set to "" (empty string) to keep original captions unchanged.
-CAPTION_REPLACE: str = os.environ.get("CAPTION_REPLACE", "@BackupChannel5211")
+CAPTION_REPLACE: str = os.environ.get("CAPTION_REPLACE", "")
 
 # ── Notify every N files copied (0 = off) ────────────────────────────────────
 NOTIFY_EVERY: int = _int_env("NOTIFY_EVERY", 100)

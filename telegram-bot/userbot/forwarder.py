@@ -30,6 +30,64 @@ RATE_DELAY = 0.0    # no artificial delay — push as fast as Telegram allows; F
 SAVE_EVERY = 25     # save checkpoint every N messages
 
 
+class _AdaptiveDelay:
+    """
+    Wraps a base inter-send delay and automatically bumps it when Telegram
+    signals a FloodWait, then gradually steps back down as sends succeed.
+
+    Why this matters
+    ────────────────
+    FloodWait means "you sent too fast."  Going back to full speed immediately
+    after waiting guarantees the same pattern repeats: Telegram's rate-limit
+    bucket refills at a fixed rate, and if you drain it just as fast, you get
+    another FloodWait in ~30 more sends.
+
+    Backing off proportionally gives the bucket time to refill, which
+    dramatically cuts the number of pauses — especially on Fast/Turbo speed.
+
+    Algorithm
+    ─────────
+    • On FloodWait(N s):  new_delay = max(cur × BUMP, N / FW_SCALE)
+                          capped at MAX_DELAY, floored at base_delay
+    • On each OK send:    after RECOVERY_SENDS consecutive successes,
+                          shrink current delay by STEP_DOWN factor
+    • Never goes below the user's chosen speed (base_delay)
+    """
+    _BUMP_FACTOR    = 2.0    # multiply delay by this on each flood wait
+    _RECOVERY_SENDS = 15     # successful sends before each step-down
+    _STEP_DOWN      = 0.80   # shrink current delay by this fraction each step
+    _MAX_DELAY      = 10.0   # cap: never wait more than 10 s between sends
+    _FW_SCALE       = 30.0   # divide fw.seconds by this to derive a floor
+
+    def __init__(self, base_delay: float):
+        self._base   = base_delay
+        self._cur    = base_delay
+        self._ok_run = 0
+
+    @property
+    def current(self) -> float:
+        return self._cur
+
+    @property
+    def is_throttled(self) -> bool:
+        return self._cur > self._base + 0.01
+
+    def on_send_ok(self):
+        if not self.is_throttled:
+            return
+        self._ok_run += 1
+        if self._ok_run >= self._RECOVERY_SENDS:
+            self._cur    = max(self._base, self._cur * self._STEP_DOWN)
+            self._ok_run = 0
+
+    def on_flood_wait(self, seconds: int):
+        fw_floor  = seconds / self._FW_SCALE
+        bumped    = max(self._cur * self._BUMP_FACTOR, fw_floor)
+        self._cur = min(bumped, self._MAX_DELAY)
+        self._cur = max(self._cur, self._base)
+        self._ok_run = 0
+
+
 def _ok(m):   print(Fore.GREEN  + m + Style.RESET_ALL)
 def _warn(m): print(Fore.YELLOW + m + Style.RESET_ALL)
 def _err(m):  print(Fore.RED    + m + Style.RESET_ALL)
@@ -380,10 +438,21 @@ async def copy_channel_files(
         if notify_every > 0 and not dry_run_mode:
             _info(f"🔔  Telegram notifications every {notify_every} files → Saved Messages")
 
-    # Wrapper: increment local flood_waits counter AND forward to notifier
+    # ── adaptive rate controller ──────────────────────────────────────────────
+    # Bumps inter-send delay on FloodWait then gradually steps back down.
+    # This avoids repeated flood waits after resuming at full speed.
+    controller = _AdaptiveDelay(rate_delay)
+
     async def _on_flood_wait(seconds: int):
+        """Combined callback: increment counter + adapt delay + notify user."""
         nonlocal flood_waits
         flood_waits += 1
+        controller.on_flood_wait(seconds)
+        if controller.is_throttled:
+            _warn(
+                f"⏳  Flood wait {seconds}s — delay bumped to "
+                f"{controller.current:.2f}s/send (was {rate_delay:.2f}s)"
+            )
         await notifier.flood_wait(seconds)
 
     # ── album buffer ──────────────────────────────────────────────────────────
@@ -415,6 +484,7 @@ async def copy_channel_files(
         )
         if result == "ok":
             copied += n
+            controller.on_send_ok()
             # Track highest msg id and mark all album IDs as done
             state["last_msg_id"] = max(state["last_msg_id"], msgs[-1].id)
             for m in msgs:
@@ -447,8 +517,7 @@ async def copy_channel_files(
                     if old_gid != gid:
                         n = len(album_buf.get(old_gid, []))  # count BEFORE pop
                         await _flush_album(old_gid)
-                        if n:
-                            pbar.update(n)
+                        pbar.update(n or 1)
                         _update_pbar(pbar, copied, skipped, failed, flood_waits)
 
                 # Pure buffering — no send yet; skip rate-limit sleep
@@ -467,8 +536,7 @@ async def copy_channel_files(
                 for old_gid in list(album_order):
                     n = len(album_buf.get(old_gid, []))  # count BEFORE pop
                     await _flush_album(old_gid)
-                    if n:
-                        pbar.update(n)
+                    pbar.update(n or 1)
                     _update_pbar(pbar, copied, skipped, failed, flood_waits)
 
                 # Duplicate check — skip if already copied in a previous run
@@ -497,6 +565,7 @@ async def copy_channel_files(
                 )
                 if result == "ok":
                     copied += 1
+                    controller.on_send_ok()
                     state["last_msg_id"] = message.id
                     state["copied_ids"].add(message.id)
                 elif result == "skip":
@@ -520,13 +589,12 @@ async def copy_channel_files(
                 ckpt.save(source_id, dest_id, state)
                 last_save = now
 
-            await asyncio.sleep(rate_delay)
+            await asyncio.sleep(controller.current)
 
         for gid in list(album_order):
             n = len(album_buf.get(gid, []))  # count BEFORE pop
             await _flush_album(gid)
-            if n:
-                pbar.update(n)
+            pbar.update(n or 1)
             _update_pbar(pbar, copied, skipped, failed, flood_waits)
 
     except KeyboardInterrupt:

@@ -85,12 +85,15 @@ class BotProgressNotifier(ProgressNotifier):
         filled = int(10 * pct / 100)
         return f"[{'█' * filled}{'░' * (10 - filled)}] {pct}%"
 
-    async def tick(self, copied, skipped, failed, total, source_name="", dest_name=""):
+    async def tick(self, copied, skipped, failed, total, source_name="", dest_name="",
+                   duplicates=0, deleted=0, non_media=0, unsupported=0):
         # Always update live stats so /status reads real numbers
         if self.bot_data is not None:
             self.bot_data["active_copy_stats"] = {
                 "copied": copied, "skipped": skipped,
                 "failed": failed, "total":  total,
+                "duplicates": duplicates, "deleted": deleted,
+                "non_media": non_media, "unsupported": unsupported,
             }
         if self.every <= 0 or copied == 0:
             return
@@ -105,9 +108,11 @@ class BotProgressNotifier(ProgressNotifier):
         text = (
             f"📊 *Copy Progress*\n"
             f"`{self._bar(copied, total)}`\n\n"
-            f"✅ Copied  : `{copied:,}` / `{total:,}`\n"
-            f"⏭ Skipped : `{skipped:,}`\n"
-            f"❌ Failed  : `{failed:,}`\n"
+            f"✅ Saved                    : `{copied:,}` / `{total:,}`\n"
+            f"♻️ Duplicates skipped       : `{duplicates:,}`\n"
+            f"🗑 Deleted msgs skipped     : `{deleted:,}`\n"
+            f"🚫 Non-media skipped        : `{non_media:,}` (Unsupported: `{unsupported:,}`)\n"
+            f"⚠️ Errors                   : `{failed:,}`\n"
             f"⏱ Elapsed : `{m}m {s}s`\n"
             f"⏳ ETA     : `{self._eta_str(copied, total)}`\n\n"
             f"_/stopjob to cancel_"
@@ -124,14 +129,17 @@ class BotProgressNotifier(ProgressNotifier):
         except Exception as e:
             logger.debug(f"BotNotifier tick: {e}")
 
-    async def done(self, copied, skipped, failed, total, source_name="", dest_name=""):
+    async def done(self, copied, skipped, failed, total, source_name="", dest_name="",
+                   duplicates=0, deleted=0, non_media=0, unsupported=0):
         m, s  = divmod(int(self._elapsed()), 60)
-        tag   = "✅ *Copy Complete!*" if failed == 0 else "⚠️ *Copy Finished (with errors)*"
+        tag   = "✅ *Indexing Complete!*" if failed == 0 else "⚠️ *Copy Finished (with errors)*"
         text  = (
             f"{tag}\n\n"
-            f"✅ Sent      : `{copied:,}`\n"
-            f"⏭ Skipped   : `{skipped:,}`\n"
-            f"❌ Failed    : `{failed:,}`\n"
+            f"✅ Saved: `{copied:,}`\n"
+            f"♻️ Duplicates skipped: `{duplicates:,}`\n"
+            f"🗑 Deleted messages skipped: `{deleted:,}`\n"
+            f"🚫 Non-media skipped: `{non_media:,}` (Unsupported: `{unsupported:,}`)\n"
+            f"⚠️ Errors: `{failed:,}`\n"
             f"⏱ Total time: `{m}m {s}s`\n"
         )
         if source_name:
@@ -484,12 +492,12 @@ async def _launch_job(query, context: ContextTypes.DEFAULT_TYPE, opts: dict, src
         )
         # Persist job to disk BEFORE creating the task so a crash mid-start still saves state
         _ar.save_resume(chat_id, src, dst, opts)
-        context.bot_data["active_copy_start"] = time.time()   # used by /status for speed + ETA
         task = asyncio.create_task(
             _run_copy(client, src, dst, opts, notifier, bot, chat_id, context.bot_data)
         )
         context.bot_data["active_copy_task"]   = task
         context.bot_data["active_status_msg"]  = (chat_id, status_msg.message_id)
+        context.bot_data["active_copy_opts"]   = opts
 
     elif mode == "sync":
         task = asyncio.create_task(
@@ -497,8 +505,6 @@ async def _launch_job(query, context: ContextTypes.DEFAULT_TYPE, opts: dict, src
         )
         context.bot_data["active_sync_task"] = task
         context.bot_data["active_sync_opts"] = opts   # read by /synctest
-        context.bot_data["active_sync_src"]  = src    # used by /synctest probe
-        context.bot_data["active_sync_dst"]  = dst
 
 
 # ── Background coroutines ─────────────────────────────────────────────────────
@@ -566,21 +572,26 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
             skip_text=opts["skip_text"],
             notifier=notifier,
             interactive=False,
-            rate_delay=opts.get("rate_delay", _SPEED_CYCLE[0][1]),
+            rate_delay=lambda: opts.get("rate_delay", _SPEED_CYCLE[0][1]),
         )
     except asyncio.CancelledError:
         # Edit the progress message to a clear "cancelled" state — do NOT call
         # notifier.done() here because that shows "✅ Copy Complete!" which is
         # misleading when the job was actually stopped by the user.
         stats = bot_data.get("active_copy_stats", {})
-        c = stats.get("copied",  0)
-        s = stats.get("skipped", 0)
-        f = stats.get("failed",  0)
+        c          = stats.get("copied",      0)
+        f          = stats.get("failed",      0)
+        duplicates = stats.get("duplicates",  0)
+        deleted    = stats.get("deleted",     0)
+        non_media  = stats.get("non_media",   0)
+        unsupported= stats.get("unsupported", 0)
         cancel_text = (
             f"⛔ *Copy Job Cancelled*\n\n"
-            f"✅ Copied  : `{c:,}`\n"
-            f"⏭ Skipped : `{s:,}`\n"
-            f"❌ Failed  : `{f:,}`\n\n"
+            f"✅ Saved                    : `{c:,}`\n"
+            f"♻️ Duplicates skipped       : `{duplicates:,}`\n"
+            f"🗑 Deleted msgs skipped     : `{deleted:,}`\n"
+            f"🚫 Non-media skipped        : `{non_media:,}` (Unsupported: `{unsupported:,}`)\n"
+            f"⚠️ Errors                   : `{f:,}`\n\n"
             f"_Use /resume to continue from this point._"
         )
         try:
@@ -601,10 +612,14 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
         stats = bot_data.get("active_copy_stats", {})
         try:
             await notifier.done(
-                stats.get("copied",  0),
-                stats.get("skipped", 0),
-                stats.get("failed",  0),
-                stats.get("total",   0),
+                stats.get("copied",      0),
+                stats.get("skipped",     0),
+                stats.get("failed",      0),
+                stats.get("total",       0),
+                duplicates  = stats.get("duplicates",  0),
+                deleted     = stats.get("deleted",     0),
+                non_media   = stats.get("non_media",   0),
+                unsupported = stats.get("unsupported", 0),
             )
         except Exception:
             pass
@@ -621,7 +636,7 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
         bot_data["active_status_msg"] = None
         bot_data.pop("active_flood_wait",    None)
         bot_data.pop("active_copy_stats",    None)  # prevent stale stats on next job start
-        bot_data.pop("active_copy_start",    None)  # prevent stale speed/ETA on next job start
+        bot_data.pop("active_copy_opts",     None)
 
 
 async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
@@ -713,8 +728,6 @@ async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
                 pass
         bot_data.pop("active_sync_handler", None)
         bot_data.pop("active_sync_opts",    None)   # bug-fix: clear on cancel
-        bot_data.pop("active_sync_src",     None)
-        bot_data.pop("active_sync_dst",     None)
         stats = bot_data.pop("active_sync_stats", {})
         c = stats.get("copied",  0)
         f = stats.get("failed",  0)
@@ -748,8 +761,6 @@ async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
         bot_data.pop("active_sync_handler", None)
         bot_data.pop("active_sync_stats",   None)
         bot_data.pop("active_sync_opts",    None)   # bug-fix: clear on error
-        bot_data.pop("active_sync_src",     None)
-        bot_data.pop("active_sync_dst",     None)
         try:
             await bot.send_message(chat_id, f"❌ Sync error: {e}")
         except Exception:
@@ -789,10 +800,18 @@ def _build_status_text(bot_data: dict) -> str:
 
     if copy_task and not copy_task.done():
         stats = bot_data.get("active_copy_stats", {})
-        c = stats.get("copied",  0)
-        s = stats.get("skipped", 0)
-        f = stats.get("failed",  0)
-        t = stats.get("total",   0)
+        c          = stats.get("copied",      0)
+        f          = stats.get("failed",      0)
+        t          = stats.get("total",       0)
+        duplicates = stats.get("duplicates",  0)
+        deleted    = stats.get("deleted",     0)
+        non_media  = stats.get("non_media",   0)
+        unsupported= stats.get("unsupported", 0)
+
+        # Progress bar
+        pct    = int(c / t * 100) if t else 0
+        filled = int(10 * pct / 100)
+        bar    = "█" * filled + "░" * (10 - filled)
         total_note = f" / `{t:,}`" if t else ""
 
         # Check if a flood wait is currently active
@@ -807,42 +826,26 @@ def _build_status_text(bot_data: dict) -> str:
             else:
                 bot_data.pop("active_flood_wait", None)
 
-        # Speed / ETA / elapsed — computed from the start timestamp stored at job launch
-        speed_line   = ""
-        elapsed_line = ""
-        start = bot_data.get("active_copy_start")
-        if start:
-            elapsed_secs = time.time() - start
-            elapsed_min  = elapsed_secs / 60
-            if elapsed_min > 0 and c > 0:
-                speed = c / elapsed_min          # files per minute
-                speed_line = f"\n  ⚡ Speed: `{speed:.1f} files/min`"
-                if t and c < t:
-                    eta_secs = int((t - c) / (speed / 60))
-                    if eta_secs < 60:
-                        eta_str = f"{eta_secs}s"
-                    elif eta_secs < 3600:
-                        eta_m, eta_s = divmod(eta_secs, 60)
-                        eta_str = f"{eta_m}m {eta_s}s"
-                    else:
-                        eta_h, rem = divmod(eta_secs, 3600)
-                        eta_str = f"{eta_h}h {rem // 60}m"
-                    speed_line += f"  🕐 ETA: `{eta_str}`"
-            if elapsed_secs >= 60:
-                el_m, el_s = divmod(int(elapsed_secs), 60)
-                elapsed_line = f"\n  ⏱ Running: `{el_m}m {el_s}s`"
-            else:
-                elapsed_line = f"\n  ⏱ Running: `{int(elapsed_secs)}s`"
-
-        job_label = "⏸ *Copy job paused (flood wait)*" if flood_line else "▶ *Copy job running*"
+        job_label = "⏸ *Copy job paused (flood wait)*" if flood_line else "▶️ *Copy job running*"
         lines.append(
             f"\n{job_label}\n"
-            f"  ✅ Copied: `{c:,}`{total_note}  "
-            f"⏭ Skipped: `{s:,}`  ❌ Failed: `{f:,}`"
-            f"{speed_line}"
-            f"{elapsed_line}"
+            f"`[{bar}] {pct}%`\n\n"
+            f"✅ Saved                    : `{c:,}`{total_note}\n"
+            f"♻️ Duplicates skipped       : `{duplicates:,}`\n"
+            f"🗑 Deleted msgs skipped     : `{deleted:,}`\n"
+            f"🚫 Non-media skipped        : `{non_media:,}` (Unsupported: `{unsupported:,}`)\n"
+            f"⚠️ Errors                   : `{f:,}`"
             f"{flood_line}"
         )
+        # Speed line — read live from opts so it reflects /speed changes instantly
+        active_opts = bot_data.get("active_copy_opts", {})
+        cur_delay   = active_opts.get("rate_delay", _SPEED_CYCLE[0][1])
+        speed_label = f"`{cur_delay}s/file`"
+        for lbl, delay in _SPEED_CYCLE:
+            if abs(delay - cur_delay) < 0.001:
+                speed_label = f"`{lbl}`"
+                break
+        lines.append(f"⏩ Speed: {speed_label}  _(use /speed to change)_")
     elif sync_hdlr:
         stats = bot_data.get("active_sync_stats", {})
         c = stats.get("copied",  0)
@@ -918,6 +921,91 @@ async def stopjob_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "No copy job is currently running.\n"
             "Use /status to check bot state."
         )
+
+
+async def exportsession_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /exportsession — export the current Telethon session as a portable string.
+
+    The string is sent ONLY in the Telegram chat (never logged), so you can
+    copy it and set it as SESSION_STRING env var on Render/Railway/Koyeb.
+    The bot will use the string instead of the session FILE, surviving restarts
+    on platforms with ephemeral filesystems.
+
+    ⚠️  Treat this string like a password — it gives full account access.
+    Delete the Telegram message after copying it.
+    """
+    from userbot_bridge import get_client
+    client = get_client(context.bot_data)
+    if not client:
+        await update.message.reply_text("❌ Userbot not connected — can't export session.")
+        return
+    try:
+        from telethon.sessions import StringSession
+        session_string = StringSession.save(client.session)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Export failed: {e}")
+        return
+
+    # Delete the command message so the command itself isn't sitting in the chat
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await context.bot.send_message(
+        update.effective_chat.id,
+        f"🔑 *Your SESSION\\_STRING* (treat like a password!):\n\n"
+        f"`{session_string}`\n\n"
+        f"*How to use on Render/Railway/Koyeb:*\n"
+        f"1\\. Copy the string above\n"
+        f"2\\. Add env var `SESSION_STRING` = \\(the string\\)\n"
+        f"3\\. The bot will use it instead of the session file\n\n"
+        f"⚠️ *Delete this message after copying\\!*",
+        parse_mode="MarkdownV2",
+    )
+
+
+async def speed_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /speed — cycle copy speed on the fly while a job is running.
+
+    Works by updating opts["rate_delay"] in bot_data; the running copy loop
+    reads it via a lambda on every message so the change takes effect
+    immediately — no restart needed.
+    """
+    bot_data = context.bot_data
+    task     = bot_data.get("active_copy_task")
+    opts     = bot_data.get("active_copy_opts")
+
+    if not task or task.done() or opts is None:
+        # No job running — just tell the user the available speeds
+        lines = ["No copy job is running. Available speeds:\n"]
+        for i, (lbl, delay) in enumerate(_SPEED_CYCLE):
+            lines.append(f"  {'▶️' if i == 0 else '  '} {lbl}")
+        lines.append("\nStart a job with /copy then use /speed to switch.")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # Cycle to the next speed
+    cur_delay = opts.get("rate_delay", _SPEED_CYCLE[0][1])
+    cur_idx   = 0
+    for i, (_, delay) in enumerate(_SPEED_CYCLE):
+        if abs(delay - cur_delay) < 0.001:
+            cur_idx = i
+            break
+    next_idx            = (cur_idx + 1) % len(_SPEED_CYCLE)
+    new_label, new_delay = _SPEED_CYCLE[next_idx]
+
+    # Mutate opts in-place — the running lambda picks this up on the next message
+    opts["rate_delay"] = new_delay
+    opts["speed_idx"]  = next_idx
+
+    await update.message.reply_text(
+        f"⏩ Speed changed to *{new_label}*\n"
+        f"_Takes effect on the next message (no restart needed)._",
+        parse_mode="Markdown",
+    )
 
 
 async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1104,7 +1192,6 @@ async def resume_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_data=bot_data,
     )
 
-    bot_data["active_copy_start"] = time.time()   # enables speed/ETA in /status
     task = asyncio.create_task(
         _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data)
     )
@@ -1130,8 +1217,6 @@ async def stopsync_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         context.bot_data.pop("active_sync_handler", None)
         context.bot_data.pop("active_sync_opts",    None)   # bug-fix: clear on stop
-        context.bot_data.pop("active_sync_src",     None)
-        context.bot_data.pop("active_sync_dst",     None)
         stats = context.bot_data.pop("active_sync_stats", {})
         c = stats.get("copied",  0)
         s = stats.get("skipped", 0)
@@ -1775,7 +1860,6 @@ async def _auto_resume_start(application, resume: dict) -> None:
         bot_data=bot_data,
     )
 
-    bot_data["active_copy_start"] = time.time()   # enables speed/ETA in /status
     task = asyncio.create_task(
         _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data)
     )
@@ -1870,50 +1954,21 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── 2. Parse optional inline channel IDs: /synctest -100123 -100456 ──────
-    args       = context.args or []
-    inline_src: int | None = None
-    inline_dst: int | None = None
-
-    if len(args) == 1:
-        await update.message.reply_text(
-            "⚠️ Provide *both* source and destination IDs.\n\n"
-            "Example: `/synctest \\-1001234567890 \\-1009876543210`",
-            parse_mode="Markdown",
-        )
-        return
-    elif len(args) >= 2:
-        try:
-            inline_src = int(args[0])
-            inline_dst = int(args[1])
-        except ValueError:
-            await update.message.reply_text(
-                "⚠️ *Invalid channel IDs.*\n\n"
-                "Usage: `/synctest \\-1001234567890 \\-1009876543210`\n"
-                "Channel IDs are negative integers (e.g. `-1001234567890`).",
-                parse_mode="Markdown",
-            )
-            return
-
-    sync_running = bot_data.get("active_sync_handler") is not None
-
-    # ── 3. Sync must be running — unless inline channels were supplied ─────────
-    if inline_src is None and not sync_running:
+    # ── 2. Sync must be running ──────────────────────────────────────────────
+    if bot_data.get("active_sync_handler") is None:
         await update.message.reply_text(
             "❌ *Auto-sync is not running.*\n\n"
-            "Start it with /sync first, then run /synctest to confirm it's live.\n\n"
-            "💡 Or probe any channel pair directly (no sync needed):\n"
-            "`/synctest \\-1001234567890 \\-1009876543210`",
+            "Start it with /sync first, then run /synctest to confirm it's live.",
             parse_mode="Markdown",
         )
         return
 
-    # ── 4. Pre-flight: filter check (only when sync is running, no inline) ────
+    # ── 3. Pre-flight: check if active filter would swallow a text probe ─────
     opts       = bot_data.get("active_sync_opts", {})
     skip_text  = opts.get("skip_text", False)
     allowed_ex = opts.get("allowed_exts", set())
 
-    if inline_src is None and (skip_text or allowed_ex):
+    if skip_text or allowed_ex:
         reason = (
             "text-only messages are being *skipped*"
             if skip_text
@@ -1929,42 +1984,8 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     client = bridge.get_client(bot_data)
-    src    = inline_src or bot_data.get("active_sync_src") or config.SOURCE_CHANNEL
-    dst    = inline_dst or bot_data.get("active_sync_dst") or config.DEST_CHANNEL
-
-    if not src or not dst:
-        await update.message.reply_text(
-            "❌ *Cannot run synctest.*\n\n"
-            "Source or destination channel not configured.\n"
-            "• Start a sync job: /sync\n"
-            "• Or probe directly: `/synctest \\-1001234567890 \\-1009876543210`",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ── Connectivity-only mode: inline channels given but sync not running ────
-    if inline_src is not None and not sync_running:
-        status = await update.message.reply_text(
-            "🔬 *Channel Connectivity Check*\n\n⏳ Checking…",
-            parse_mode="Markdown",
-        )
-        results = []
-        for label, cid in [("Source", src), ("Destination", dst)]:
-            try:
-                ent  = await client.get_entity(cid)
-                name = (getattr(ent, "title", None)
-                        or getattr(ent, "username", None)
-                        or str(cid))
-                results.append(f"✅ {label}: *{name}* (`{cid}`)")
-            except Exception as e:
-                results.append(f"❌ {label} `{cid}`: `{e}`")
-        await status.edit_text(
-            "🔬 *Channel Connectivity Check*\n\n"
-            + "\n".join(results)
-            + "\n\n_Start /sync to run a full live probe._",
-            parse_mode="Markdown",
-        )
-        return
+    src    = config.SOURCE_CHANNEL
+    dst    = config.DEST_CHANNEL
 
     status = await update.message.reply_text(
         "🔬 *Sync Health Check*\n\n⏳ Preparing…",
@@ -2059,49 +2080,13 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /logs [N] — show the last N captured log lines (default 25, max 50).
-    Useful for debugging crashes without needing Railway's console.
-    """
-    import log_buffer
-
-    args = context.args or []
-    n = 25
-    if args:
-        try:
-            n = max(1, min(50, int(args[0])))
-        except ValueError:
-            await update.message.reply_text("Usage: /logs [number]  e.g. /logs 30")
-            return
-
-    lines = log_buffer.get_lines(n)
-    if not lines:
-        await update.message.reply_text("\U0001f4ed No log lines captured yet.")
-        return
-
-    header   = f"\U0001f4cb *Last {len(lines)} log lines:*\n\n"
-    body     = "\n".join(lines)
-    raw_text = header + f"```\n{body}\n```"
-
-    # Telegram hard-limit is 4096 chars — trim oldest lines to fit
-    if len(raw_text) > 4000:
-        max_body = 4000 - len(header) - 8   # 8 for ``` markers + newlines
-        body = body[-max_body:]
-        nl = body.find("\n")
-        if nl >= 0:
-            body = body[nl + 1:]
-        raw_text = header + f"```\n{body}\n```"
-
-    await update.message.reply_text(raw_text, parse_mode="Markdown")
-
-
 def get_extra_handlers() -> list:
     """Standalone command handlers registered outside the conversation."""
     return [
-        CommandHandler("logs",      logs_cmd),
         CommandHandler("status",    status_cmd),
-        CommandHandler("stopjob",   stopjob_cmd),
+        CommandHandler("stopjob",       stopjob_cmd),
+        CommandHandler("speed",         speed_cmd),
+        CommandHandler("exportsession", exportsession_cmd),
         CommandHandler("resume",    resume_cmd),
         CommandHandler("stopsync",  stopsync_cmd),
         CommandHandler("synctest",  synctest_cmd),

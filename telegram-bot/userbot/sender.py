@@ -25,13 +25,19 @@ from telethon.errors import (
     MediaEmptyError,
     FileReferenceExpiredError,
 )
+from colorama import Fore, Style
 
 from .filter_utils import clean_caption
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES       = 3
+MAX_RETRIES    = 3     # retries for non-FloodWait errors only
 ALBUM_FLUSH_DELAY = 0.6
+
+
+def _ok(m):   print(Fore.GREEN  + m + Style.RESET_ALL)
+def _warn(m): print(Fore.YELLOW + m + Style.RESET_ALL)
+def _err(m):  print(Fore.RED    + m + Style.RESET_ALL)
 
 
 def _is_sendable_media(media) -> bool:
@@ -61,14 +67,16 @@ async def _do_send(
     FloodWait is ALWAYS waited out and retried — it never counts as a failure.
     """
     if dry_run:
-        logger.debug("DRY-RUN: would send msg %s", message.id)
+        logger.debug(f"[DRY-RUN] Would send msg {message.id}")
         return "ok"
 
     has_media = message.media and _is_sendable_media(message.media)
     has_text  = bool(message.message)
 
     if not has_media and not has_text:
-        return "skip"
+        if message.media is not None:
+            return "skip_unsupported"
+        return "skip_deleted"
 
     caption  = _cleaned(message.message, caption_replacement)
     attempts = 0
@@ -88,8 +96,9 @@ async def _do_send(
             return "ok"
 
         except FloodWaitError as fw:
+            # Always wait — Telegram is telling us to slow down, not to stop.
             wait = fw.seconds + 2
-            logger.warning("Flood wait %ds — pausing before retry…", fw.seconds)
+            _warn(f"\n⏳  Flood wait {fw.seconds}s — pausing and retrying…")
             if on_flood_wait:
                 try:
                     await on_flood_wait(fw.seconds)
@@ -120,14 +129,13 @@ async def _do_send(
             return "fail"
 
         except (ChannelPrivateError, ChatWriteForbiddenError) as e:
-            logger.error("Permission error sending to destination: %s", e)
+            _err(f"\n❌  Permission error on destination: {e}")
             return "fail"
 
         except Exception as e:
             attempts += 1
             if attempts >= MAX_RETRIES:
-                logger.warning("Msg %s failed after %d attempts: %s",
-                               message.id, attempts, e)
+                logger.warning(f"Msg {message.id} failed after {attempts} attempts: {e}")
                 return "fail"
             await asyncio.sleep(1.5)
 
@@ -149,7 +157,7 @@ async def send_album(
         return "skip"
 
     if dry_run:
-        logger.debug("DRY-RUN: would send album of %d messages", len(messages))
+        logger.debug(f"[DRY-RUN] Would send album of {len(messages)} messages")
         return "ok"
 
     files = []
@@ -166,9 +174,7 @@ async def send_album(
         for msg in messages:
             if msg.message:
                 try:
-                    await client.send_message(
-                        dest, _cleaned(msg.message, caption_replacement)
-                    )
+                    await client.send_message(dest, _cleaned(msg.message, caption_replacement))
                     return "ok"
                 except Exception:
                     pass
@@ -178,15 +184,13 @@ async def send_album(
     while True:
         try:
             if len(files) == 1:
-                await client.send_file(dest, file=files[0],
-                                       caption=caption, parse_mode="md")
+                await client.send_file(dest, file=files[0], caption=caption, parse_mode="md")
             else:
-                await client.send_file(dest, file=files,
-                                       caption=caption, parse_mode="md")
+                await client.send_file(dest, file=files, caption=caption, parse_mode="md")
             return "ok"
 
         except FloodWaitError as fw:
-            logger.warning("Flood wait %ds (album) — pausing before retry…", fw.seconds)
+            _warn(f"\n⏳  Flood wait {fw.seconds}s (album) — pausing and retrying…")
             if on_flood_wait:
                 try:
                     await on_flood_wait(fw.seconds)
@@ -201,8 +205,7 @@ async def send_album(
                 files     = [m.media for m in refreshed
                              if m and m.media and _is_sendable_media(m.media)]
                 if files:
-                    await client.send_file(dest, file=files,
-                                           caption=caption, parse_mode="md")
+                    await client.send_file(dest, file=files, caption=caption, parse_mode="md")
                     return "ok"
             except Exception:
                 pass
@@ -211,6 +214,6 @@ async def send_album(
         except Exception as e:
             attempts += 1
             if attempts >= MAX_RETRIES:
-                logger.warning("Album send failed after %d attempts: %s", attempts, e)
+                logger.warning(f"Album send failed after {attempts} attempts: {e}")
                 return "fail"
             await asyncio.sleep(1.5)

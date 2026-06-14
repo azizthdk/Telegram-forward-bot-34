@@ -43,7 +43,11 @@ def load(source_id: int, dest_id: int) -> dict:
         "skipped":     0,
         "failed":      0,
         "flood_waits": 0,
-        "copied_ids":  set(),          # set of source msg IDs already sent
+        "duplicates":  0,
+        "deleted":     0,
+        "non_media":   0,
+        "unsupported": 0,
+        "copied_ids":  set(),
         "started_at":  time.strftime("%Y-%m-%d %H:%M:%S"),
         "updated_at":  None,
     }

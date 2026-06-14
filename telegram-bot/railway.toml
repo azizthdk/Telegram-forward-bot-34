@@ -3,5 +3,6 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+startCommand = "python main.py"
 restartPolicyType = "always"
 restartPolicyMaxRetries = 10

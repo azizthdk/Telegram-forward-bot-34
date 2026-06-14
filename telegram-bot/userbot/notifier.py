@@ -62,6 +62,10 @@ class ProgressNotifier:
         total: int,
         source_name: str = "",
         dest_name: str = "",
+        duplicates: int = 0,
+        deleted: int = 0,
+        non_media: int = 0,
+        unsupported: int = 0,
     ):
         if self.every <= 0:
             return
@@ -79,9 +83,11 @@ class ProgressNotifier:
         text = (
             f"📊 **Copy Progress**\n"
             f"`[{bar}] {pct}%`\n\n"
-            f"✅ Copied   : `{copied:,}` / `{total:,}`\n"
-            f"⏭ Skipped  : `{skipped:,}`\n"
-            f"❌ Failed   : `{failed:,}`\n"
+            f"✅ Saved                    : `{copied:,}` / `{total:,}`\n"
+            f"♻️ Duplicates skipped       : `{duplicates:,}`\n"
+            f"🗑 Deleted msgs skipped     : `{deleted:,}`\n"
+            f"🚫 Non-media skipped        : `{non_media:,}` (Unsupported: `{unsupported:,}`)\n"
+            f"⚠️ Errors                   : `{failed:,}`\n"
             f"⏱ Elapsed  : `{_fmt_time(self._elapsed())}`\n"
             f"⏳ ETA      : `{self._eta(copied, total)}`\n"
         )
@@ -105,16 +111,22 @@ class ProgressNotifier:
         total: int,
         source_name: str = "",
         dest_name: str = "",
+        duplicates: int = 0,
+        deleted: int = 0,
+        non_media: int = 0,
+        unsupported: int = 0,
     ):
         if self.every <= 0:
             return
         elapsed = _fmt_time(self._elapsed())
-        status  = "✅ **Copy Complete!**" if failed == 0 else "⚠️ **Copy Finished (with errors)**"
+        status  = "✅ **Indexing Complete!**" if failed == 0 else "⚠️ **Copy Finished (with errors)**"
         text = (
             f"{status}\n\n"
-            f"✅ Sent     : `{copied:,}`\n"
-            f"⏭ Skipped  : `{skipped:,}`\n"
-            f"❌ Failed   : `{failed:,}`\n"
+            f"✅ Saved: `{copied:,}`\n"
+            f"♻️ Duplicates skipped: `{duplicates:,}`\n"
+            f"🗑 Deleted messages skipped: `{deleted:,}`\n"
+            f"🚫 Non-media skipped: `{non_media:,}` (Unsupported: `{unsupported:,}`)\n"
+            f"⚠️ Errors: `{failed:,}`\n"
             f"⏱ Total time: `{elapsed}`\n"
         )
         if source_name:

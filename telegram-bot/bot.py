@@ -1,18 +1,15 @@
 import asyncio
 import logging
 import os
-import time
 from telegram import Update
 from telegram.ext import (
     Application,
-    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
     ConversationHandler,
     PicklePersistence,
     PersistenceInput,
-    TypeHandler,
     filters,
 )
 import database as db
@@ -40,50 +37,57 @@ from states import (
 
 logger = logging.getLogger(__name__)
 
-# Recorded when this module is first imported — used by /uptime to show
-# true process uptime rather than time since post_init (which runs ~1s later).
-_BOT_START_TIME = time.time()
 
+async def _health_server_task():
+    """
+    Tiny HTTP server that responds 200 OK to any request.
 
-# ── Admin gate ────────────────────────────────────────────────────────────────
-# Reads ADMIN_USER_ID from env. If set, every update that comes from a
-# different user is rejected before any handler runs.
-# Set ADMIN_USER_ID=0 (or leave it unset) to allow everyone (dev mode).
+    Keeps Render / Railway / Koyeb Web Service probes happy so the container
+    is never marked unhealthy and never spun down for inactivity.
+    Binds to $PORT (set automatically by Render/Railway) or 8080 as fallback.
+    Safe to run on Replit too — it just opens an unused port and idles there.
+    """
+    port = int(os.environ.get("PORT", "8080"))
 
-async def _admin_gate(update: Update, context) -> None:
-    admin_id_str = os.environ.get("ADMIN_USER_ID", "0").strip()
+    async def _handle(reader, writer):
+        try:
+            await reader.read(4096)          # drain the HTTP request
+        except Exception:
+            pass
+        body = b"OK"
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            b"Connection: close\r\n"
+            b"\r\n" + body
+        )
+        try:
+            writer.write(response)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+
     try:
-        admin_id = int(admin_id_str)
-    except ValueError:
-        admin_id = 0
-
-    if not admin_id:
-        return  # No restriction configured
-
-    user = update.effective_user
-    if user is None:
-        return  # System/channel messages — let through
-
-    if user.id == admin_id:
-        return  # Authorized
-
-    # Unauthorized user — respond and stop all further handlers
-    if update.message:
-        await update.message.reply_text("⛔ This bot is private.")
-    elif update.callback_query:
-        await update.callback_query.answer("⛔ Unauthorized.", show_alert=True)
-    raise ApplicationHandlerStop()
+        server = await asyncio.start_server(_handle, "0.0.0.0", port)
+        logger.info("Health-check server listening on port %d", port)
+        async with server:
+            await server.serve_forever()
+    except Exception as e:
+        logger.warning("Health-check server failed to start on port %d: %s", port, e)
 
 
 async def post_init(application: Application):
     """Called after the application is initialized."""
-    # Store start time so /uptime can read it from bot_data without importing bot.py
-    application.bot_data.setdefault("bot_start_time", _BOT_START_TIME)
     await db.init_db()
     await forwarder.load_rules_on_startup(application.bot_data)
     await userbot_bridge.init_userbot(application)
     # Schedule auto-resume check — runs in the background after userbot connects
     asyncio.create_task(copybot_handler.schedule_auto_resume(application))
+    # Start the keep-alive health server (keeps Render/Railway alive, harmless on Replit)
+    asyncio.create_task(_health_server_task())
 
 
 def build_app(token: str) -> Application:
@@ -105,9 +109,6 @@ def build_app(token: str) -> Application:
         .post_init(post_init)
         .build()
     )
-
-    # ── Admin gate runs FIRST — group -1 fires before all other groups ───────
-    app.add_handler(TypeHandler(Update, _admin_gate), group=-1)
 
     # ── Main menu conversation handler ───────────────────────────────────────
     conv = ConversationHandler(
@@ -190,8 +191,7 @@ def build_app(token: str) -> Application:
     app.add_handler(copy_conv)
     app.add_handler(login_conv)
     app.add_handler(conv)
-    app.add_handler(CommandHandler("help",   menu_handler.help_cmd))
-    app.add_handler(CommandHandler("uptime", menu_handler.uptime_cmd))
+    app.add_handler(CommandHandler("help", menu_handler.help_cmd))
 
     # Standalone userbot control commands
     for h in copybot_handler.get_extra_handlers():
@@ -204,6 +204,8 @@ def build_app(token: str) -> Application:
     )
 
     # Live forwarder — listens to ALL messages in ALL chats (group 1 runs after conv)
+    # filters.ALL already covers UpdateType.CHANNEL_POSTS so we only need one handler.
+    # Two handlers for the same function would double-forward every channel post.
     app.add_handler(
         MessageHandler(filters.ALL & ~filters.COMMAND, forwarder.handle_forward),
         group=1,

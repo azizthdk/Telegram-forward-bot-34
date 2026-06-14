@@ -484,6 +484,7 @@ async def _launch_job(query, context: ContextTypes.DEFAULT_TYPE, opts: dict, src
         )
         # Persist job to disk BEFORE creating the task so a crash mid-start still saves state
         _ar.save_resume(chat_id, src, dst, opts)
+        context.bot_data["active_copy_start"] = time.time()   # used by /status for speed + ETA
         task = asyncio.create_task(
             _run_copy(client, src, dst, opts, notifier, bot, chat_id, context.bot_data)
         )
@@ -618,6 +619,7 @@ async def _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data):
         bot_data["active_status_msg"] = None
         bot_data.pop("active_flood_wait",    None)
         bot_data.pop("active_copy_stats",    None)  # prevent stale stats on next job start
+        bot_data.pop("active_copy_start",    None)  # prevent stale speed/ETA on next job start
 
 
 async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
@@ -799,11 +801,40 @@ def _build_status_text(bot_data: dict) -> str:
             else:
                 bot_data.pop("active_flood_wait", None)
 
+        # Speed / ETA / elapsed — computed from the start timestamp stored at job launch
+        speed_line   = ""
+        elapsed_line = ""
+        start = bot_data.get("active_copy_start")
+        if start:
+            elapsed_secs = time.time() - start
+            elapsed_min  = elapsed_secs / 60
+            if elapsed_min > 0 and c > 0:
+                speed = c / elapsed_min          # files per minute
+                speed_line = f"\n  ⚡ Speed: `{speed:.1f} files/min`"
+                if t and c < t:
+                    eta_secs = int((t - c) / (speed / 60))
+                    if eta_secs < 60:
+                        eta_str = f"{eta_secs}s"
+                    elif eta_secs < 3600:
+                        eta_m, eta_s = divmod(eta_secs, 60)
+                        eta_str = f"{eta_m}m {eta_s}s"
+                    else:
+                        eta_h, rem = divmod(eta_secs, 3600)
+                        eta_str = f"{eta_h}h {rem // 60}m"
+                    speed_line += f"  🕐 ETA: `{eta_str}`"
+            if elapsed_secs >= 60:
+                el_m, el_s = divmod(int(elapsed_secs), 60)
+                elapsed_line = f"\n  ⏱ Running: `{el_m}m {el_s}s`"
+            else:
+                elapsed_line = f"\n  ⏱ Running: `{int(elapsed_secs)}s`"
+
         job_label = "⏸ *Copy job paused (flood wait)*" if flood_line else "▶ *Copy job running*"
         lines.append(
             f"\n{job_label}\n"
             f"  ✅ Copied: `{c:,}`{total_note}  "
             f"⏭ Skipped: `{s:,}`  ❌ Failed: `{f:,}`"
+            f"{speed_line}"
+            f"{elapsed_line}"
             f"{flood_line}"
         )
     elif sync_hdlr:

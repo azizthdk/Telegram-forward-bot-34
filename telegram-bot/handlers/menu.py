@@ -9,11 +9,16 @@ MAIN_MENU_TEXT = (
 )
 
 
-def main_menu_keyboard(userbot_ready: bool = False):
+def main_menu_keyboard(userbot_ready: bool = False, userbot2_ready: bool = False):
     connect_label = (
-        "✅ Userbot Connected"
+        "✅ Userbot 1 Connected"
         if userbot_ready
-        else "🔑 Connect Userbot"
+        else "🔑 Connect Userbot 1"
+    )
+    connect2_label = (
+        "✅ Userbot 2 Connected"
+        if userbot2_ready
+        else "🔑 Connect Userbot 2"
     )
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Forward Rule",   callback_data="add_rule")],
@@ -21,8 +26,9 @@ def main_menu_keyboard(userbot_ready: bool = False):
         [InlineKeyboardButton("🗑 Delete Forward Rule", callback_data="delete_rule")],
         [InlineKeyboardButton("📜 Forward History",    callback_data="fwd_history")],
         [InlineKeyboardButton("🚫 Ignore List",        callback_data="ignore_list")],
-        [InlineKeyboardButton(connect_label,           callback_data="userbot_login"),
-         InlineKeyboardButton("📊 Status",             callback_data="status_menu")],
+        [InlineKeyboardButton(connect_label,            callback_data="userbot_login"),
+         InlineKeyboardButton("📊 Status",              callback_data="status_menu")],
+        [InlineKeyboardButton(connect2_label,           callback_data="userbot2_login")],
         [InlineKeyboardButton("📡 List My Chats",      callback_data="listchats_menu")],
         [InlineKeyboardButton("ℹ️ Help",               callback_data="help")],
     ])
@@ -31,6 +37,11 @@ def main_menu_keyboard(userbot_ready: bool = False):
 def _ready(context) -> bool:
     import userbot_bridge as bridge
     return bridge.is_ready(context.bot_data)
+
+
+def _ready2(context) -> bool:
+    import userbot_bridge as bridge
+    return bridge.is_ready2(context.bot_data)
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -54,7 +65,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         MAIN_MENU_TEXT,
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(_ready(context)),
+        reply_markup=main_menu_keyboard(_ready(context), _ready2(context)),
     )
     return MAIN_MENU
 
@@ -65,7 +76,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         MAIN_MENU_TEXT,
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(_ready(context)),
+        reply_markup=main_menu_keyboard(_ready(context), _ready2(context)),
     )
     return MAIN_MENU
 
@@ -116,7 +127,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*How to use:*\n"
         "1. Add this bot as an *admin* to the destination chat/channel.\n"
         "2. Use *Add Forward Rule* to set up auto-forwarding.\n"
-        "3. Tap *🔑 Connect Userbot* (or send /login) to enable copy/sync.\n\n"
+        "3. Tap *🔑 Connect Userbot 1* (or send /login) to enable copy/sync.\n\n"
         "*Bot forwarding (with 'Forwarded from' tag):*\n"
         "• ➕ *Add Forward Rule* — Auto-forward messages from one chat to another\n"
         "• 📋 *List Rules* — See all active forwarding rules\n"
@@ -124,13 +135,17 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 📜 *Forward History* — Forward past messages from a channel\n"
         "• 🚫 *Ignore List* — Chats to skip during bulk operations\n\n"
         "*Userbot copy (NO 'Forwarded from' tag):*\n"
-        "• /login — Connect your Telegram account (required first)\n"
+        "• /login — Connect your first Telegram account (required for /copy, /sync)\n"
+        "• /login2 — Connect your second account (required for /dualcopy)\n"
         "• /copy — Bulk-copy files from any channel you're a member of\n"
+        "• /dualcopy — Parallel copy using 2 accounts (~2× speed)\n"
         "• /dryrun — Preview what would be copied (nothing is sent)\n"
         "• /sync — Start live auto-sync (new messages forwarded instantly)\n"
         "• /stopsync — Stop the running auto-sync\n"
         "• /status — Check current copy job progress\n"
+        "• /status2 — Check dual-copy job progress (Bot 1 vs Bot 2 breakdown)\n"
         "• /stopjob — Cancel the running copy job\n"
+        "• /stopdual — Cancel the running dual-copy job\n"
         "• /resume — Resume a copy job after a bot restart\n\n"
         "*Inspection & diagnostics:*\n"
         "• /listchats — List all your Telegram chats with IDs\n"
@@ -145,7 +160,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• The bot must be an *admin* in destination chats for forwarding.\n"
         "• For /copy and /sync you only need to be a *member* of the source channel.\n"
         "• After /login, copy your SESSION_STRING and add it to Railway Variables\n"
-        "  so the userbot reconnects automatically after each redeploy."
+        "  so the userbot reconnects automatically after each redeploy.\n"
+        "• After /login2, copy SESSION_STRING_2 to Railway Variables too."
     )
     query = update.callback_query
     if query:
@@ -161,7 +177,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text,
             parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(_ready(context)),
+            reply_markup=main_menu_keyboard(_ready(context), _ready2(context)),
         )
     return MAIN_MENU
 
@@ -173,7 +189,7 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"❓ `{cmd}` is not a valid command.\n\n"
         "Here's what I can do — tap a button or send a command:",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(_ready(context)),
+        reply_markup=main_menu_keyboard(_ready(context), _ready2(context)),
     )
 
 
@@ -200,5 +216,5 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         reply,
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(_ready(context)),
+        reply_markup=main_menu_keyboard(_ready(context), _ready2(context)),
     )

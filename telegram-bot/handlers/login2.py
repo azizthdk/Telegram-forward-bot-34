@@ -110,15 +110,23 @@ async def login2_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
                 reply_markup=_menu_kb(),
             )
-        else:
+            return ConversationHandler.END
+        # Background connect task is still running — wait up to 10 s for it
+        await _reply(
+            "⏳ *Connecting Userbot 2…*\n\n"
+            "The Telegram client is starting up. Please wait a moment…",
+            parse_mode="Markdown",
+        )
+        client = await bridge.await_client(context.bot_data, slot=2, timeout=10.0)
+        if client is None:
             await _reply(
-                "⏳ *Userbot 2 is still initialising…*\n\n"
-                "The client is connecting in the background. "
-                "Please wait a few seconds and try /login2 again.",
+                "❌ *Could not connect Userbot 2 to Telegram.*\n\n"
+                "Check that `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are set "
+                "correctly in Railway Variables, then restart the bot.",
                 parse_mode="Markdown",
                 reply_markup=_menu_kb(),
             )
-        return ConversationHandler.END
+            return ConversationHandler.END
 
     await _reply(
         "🔑 *Userbot Login — Bot 2 (Second Account)*\n\n"
@@ -539,4 +547,5 @@ def build_login2_conv() -> ConversationHandler:
         per_user=True,
         per_message=False,
     )
+
 

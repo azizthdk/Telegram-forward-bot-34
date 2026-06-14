@@ -497,6 +497,8 @@ async def _launch_job(query, context: ContextTypes.DEFAULT_TYPE, opts: dict, src
         )
         context.bot_data["active_sync_task"] = task
         context.bot_data["active_sync_opts"] = opts   # read by /synctest
+        context.bot_data["active_sync_src"]  = src    # used by /synctest probe
+        context.bot_data["active_sync_dst"]  = dst
 
 
 # ── Background coroutines ─────────────────────────────────────────────────────
@@ -711,6 +713,8 @@ async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
                 pass
         bot_data.pop("active_sync_handler", None)
         bot_data.pop("active_sync_opts",    None)   # bug-fix: clear on cancel
+        bot_data.pop("active_sync_src",     None)
+        bot_data.pop("active_sync_dst",     None)
         stats = bot_data.pop("active_sync_stats", {})
         c = stats.get("copied",  0)
         f = stats.get("failed",  0)
@@ -744,6 +748,8 @@ async def _run_sync(client, src, dst, opts, bot, chat_id, bot_data):
         bot_data.pop("active_sync_handler", None)
         bot_data.pop("active_sync_stats",   None)
         bot_data.pop("active_sync_opts",    None)   # bug-fix: clear on error
+        bot_data.pop("active_sync_src",     None)
+        bot_data.pop("active_sync_dst",     None)
         try:
             await bot.send_message(chat_id, f"❌ Sync error: {e}")
         except Exception:
@@ -1098,6 +1104,7 @@ async def resume_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_data=bot_data,
     )
 
+    bot_data["active_copy_start"] = time.time()   # enables speed/ETA in /status
     task = asyncio.create_task(
         _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data)
     )
@@ -1123,6 +1130,8 @@ async def stopsync_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         context.bot_data.pop("active_sync_handler", None)
         context.bot_data.pop("active_sync_opts",    None)   # bug-fix: clear on stop
+        context.bot_data.pop("active_sync_src",     None)
+        context.bot_data.pop("active_sync_dst",     None)
         stats = context.bot_data.pop("active_sync_stats", {})
         c = stats.get("copied",  0)
         s = stats.get("skipped", 0)
@@ -1766,6 +1775,7 @@ async def _auto_resume_start(application, resume: dict) -> None:
         bot_data=bot_data,
     )
 
+    bot_data["active_copy_start"] = time.time()   # enables speed/ETA in /status
     task = asyncio.create_task(
         _run_copy(client, src, dst, opts, notifier, bot, chat_id, bot_data)
     )
@@ -1890,8 +1900,17 @@ async def synctest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     client = bridge.get_client(bot_data)
-    src    = config.SOURCE_CHANNEL
-    dst    = config.DEST_CHANNEL
+    src    = bot_data.get("active_sync_src") or config.SOURCE_CHANNEL
+    dst    = bot_data.get("active_sync_dst") or config.DEST_CHANNEL
+
+    if not src or not dst:
+        await update.message.reply_text(
+            "❌ *Cannot run synctest.*\n\n"
+            "Source or destination channel not configured.\n"
+            "Start a sync job with /sync first, or set SOURCE\_CHANNEL/DEST\_CHANNEL.",
+            parse_mode="Markdown",
+        )
+        return
 
     status = await update.message.reply_text(
         "🔬 *Sync Health Check*\n\n⏳ Preparing…",

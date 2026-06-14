@@ -380,6 +380,12 @@ async def copy_channel_files(
         if notify_every > 0 and not dry_run_mode:
             _info(f"🔔  Telegram notifications every {notify_every} files → Saved Messages")
 
+    # Wrapper: increment local flood_waits counter AND forward to notifier
+    async def _on_flood_wait(seconds: int):
+        nonlocal flood_waits
+        flood_waits += 1
+        await notifier.flood_wait(seconds)
+
     # ── album buffer ──────────────────────────────────────────────────────────
     album_buf: dict = {}
     album_order: list = []
@@ -405,7 +411,7 @@ async def copy_channel_files(
             client, dest_entity, msgs,
             dry_run=dry_run_mode,
             caption_replacement=caption_replacement,
-            on_flood_wait=notifier.flood_wait,
+            on_flood_wait=_on_flood_wait,
         )
         if result == "ok":
             copied += n
@@ -441,7 +447,8 @@ async def copy_channel_files(
                     if old_gid != gid:
                         n = len(album_buf.get(old_gid, []))  # count BEFORE pop
                         await _flush_album(old_gid)
-                        pbar.update(n or 1)
+                        if n:
+                            pbar.update(n)
                         _update_pbar(pbar, copied, skipped, failed, flood_waits)
 
                 # Pure buffering — no send yet; skip rate-limit sleep
@@ -460,7 +467,8 @@ async def copy_channel_files(
                 for old_gid in list(album_order):
                     n = len(album_buf.get(old_gid, []))  # count BEFORE pop
                     await _flush_album(old_gid)
-                    pbar.update(n or 1)
+                    if n:
+                        pbar.update(n)
                     _update_pbar(pbar, copied, skipped, failed, flood_waits)
 
                 # Duplicate check — skip if already copied in a previous run
@@ -485,7 +493,7 @@ async def copy_channel_files(
                     client, dest_entity, message,
                     dry_run=dry_run_mode,
                     caption_replacement=caption_replacement,
-                    on_flood_wait=notifier.flood_wait,
+                    on_flood_wait=_on_flood_wait,
                 )
                 if result == "ok":
                     copied += 1
@@ -517,7 +525,8 @@ async def copy_channel_files(
         for gid in list(album_order):
             n = len(album_buf.get(gid, []))  # count BEFORE pop
             await _flush_album(gid)
-            pbar.update(n or 1)
+            if n:
+                pbar.update(n)
             _update_pbar(pbar, copied, skipped, failed, flood_waits)
 
     except KeyboardInterrupt:

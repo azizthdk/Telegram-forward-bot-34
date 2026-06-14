@@ -30,7 +30,14 @@ import time
 
 logger = logging.getLogger(__name__)
 
-API_ID   = int(os.environ.get("TELEGRAM_API_ID",   "0"))
+def _parse_api_id() -> int:
+    val = (os.environ.get("TELEGRAM_API_ID", "") or "0").strip()
+    try:
+        return int(val)
+    except ValueError:
+        return 0   # invalid value — userbot will be disabled with a warning
+
+API_ID = _parse_api_id()
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
 
 # SESSION_STRING takes priority — required on Railway (ephemeral filesystem).

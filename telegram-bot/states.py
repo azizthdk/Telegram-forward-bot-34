@@ -27,3 +27,18 @@ LOGIN_2FA   = 16
 
 # Caption-preview wizard state (used by handlers/preview.py)
 PREVIEW_AWAIT_MSG = 17
+
+# Second userbot login wizard states (used by handlers/login2.py)
+LOGIN2_PHONE = 18
+LOGIN2_OTP   = 19
+LOGIN2_2FA   = 20
+
+# Dual-bot copy wizard states (used by handlers/dualcopy.py)
+DUAL_AWAIT_SRC    = 21
+DUAL_AWAIT_DST    = 22
+DUAL_OPTIONS      = 23
+DUAL_AWAIT_REPLACE = 24
+
+# String-session import states (used by handlers/login.py and login2.py)
+LOGIN_STRING  = 25   # Bot 1: waiting for pasted Telethon string session
+LOGIN2_STRING = 26   # Bot 2: waiting for pasted Telethon string session

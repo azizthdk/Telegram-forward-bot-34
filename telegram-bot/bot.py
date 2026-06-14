@@ -21,7 +21,9 @@ from handlers import history as history_handler
 from handlers import ignore as ignore_handler
 from handlers import copybot as copybot_handler
 from handlers import login as login_handler
+from handlers import login2 as login2_handler
 from handlers import preview as preview_handler
+from handlers import dualcopy as dualcopy_handler
 from states import (
     MAIN_MENU,
     ADD_RULE_SOURCE,
@@ -38,47 +40,6 @@ from states import (
 logger = logging.getLogger(__name__)
 
 
-async def _health_server_task():
-    """
-    Tiny HTTP server that responds 200 OK to any request.
-
-    Keeps Render / Railway / Koyeb Web Service probes happy so the container
-    is never marked unhealthy and never spun down for inactivity.
-    Binds to $PORT (set automatically by Render/Railway) or 8080 as fallback.
-    Safe to run on Replit too — it just opens an unused port and idles there.
-    """
-    port = int(os.environ.get("PORT", "8080"))
-
-    async def _handle(reader, writer):
-        try:
-            await reader.read(4096)          # drain the HTTP request
-        except Exception:
-            pass
-        body = b"OK"
-        response = (
-            b"HTTP/1.1 200 OK\r\n"
-            b"Content-Type: text/plain\r\n"
-            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
-            b"Connection: close\r\n"
-            b"\r\n" + body
-        )
-        try:
-            writer.write(response)
-            await writer.drain()
-        except Exception:
-            pass
-        finally:
-            writer.close()
-
-    try:
-        server = await asyncio.start_server(_handle, "0.0.0.0", port)
-        logger.info("Health-check server listening on port %d", port)
-        async with server:
-            await server.serve_forever()
-    except Exception as e:
-        logger.warning("Health-check server failed to start on port %d: %s", port, e)
-
-
 async def post_init(application: Application):
     """Called after the application is initialized."""
     await db.init_db()
@@ -86,8 +47,6 @@ async def post_init(application: Application):
     await userbot_bridge.init_userbot(application)
     # Schedule auto-resume check — runs in the background after userbot connects
     asyncio.create_task(copybot_handler.schedule_auto_resume(application))
-    # Start the keep-alive health server (keeps Render/Railway alive, harmless on Replit)
-    asyncio.create_task(_health_server_task())
 
 
 def build_app(token: str) -> Application:
@@ -132,8 +91,8 @@ def build_app(token: str) -> Application:
                 CallbackQueryHandler(copybot_handler.listchats_callback,   pattern="^listchats_menu$"),
                 CallbackQueryHandler(ignore_handler.ignore_remove_select,  pattern=r"^rm_ignore_\d+$"),
                 CallbackQueryHandler(rules_handler.delete_rule_select,     pattern=r"^del_rule_\d+$"),
-                # NOTE: "userbot_login" is NOT handled here — it falls through
-                # to login_conv's entry_point so the login conversation states work.
+                # NOTE: "userbot_login" and "userbot2_login" fall through
+                # to their respective login_conv entry_points.
             ],
             ADD_RULE_SOURCE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, rules_handler.add_rule_source),
@@ -176,26 +135,34 @@ def build_app(token: str) -> Application:
     )
 
     # ── Copy / dryrun / sync conversation handler ────────────────────────────
-    copy_conv = copybot_handler.build_copy_conv()
+    copy_conv     = copybot_handler.build_copy_conv()
+    login_conv    = login_handler.build_login_conv()
+    login2_conv   = login2_handler.build_login2_conv()
+    preview_conv  = preview_handler.build_preview_conv()
+    dualcopy_conv = dualcopy_handler.build_dualcopy_conv()
 
-    login_conv = login_handler.build_login_conv()
-
-    preview_conv = preview_handler.build_preview_conv()
-
-    # preview_conv is first: when in PREVIEW_AWAIT_MSG state any non-command
-    # message goes there before copy_conv or conv can intercept it.
-    # copy_conv and login_conv are registered BEFORE conv so that /copy,
-    # /dryrun, /sync, and /login always work even when the user is stuck
-    # in a stale conv state (e.g. Forward History awaiting input).
+    # Registration order matters:
+    #   preview_conv  — must intercept free-text messages before copy_conv/conv
+    #   copy_conv     — /copy, /dryrun, /sync wizard
+    #   login_conv    — /login wizard
+    #   login2_conv   — /login2 wizard
+    #   dualcopy_conv — /dualcopy wizard (before main conv so it always intercepts)
+    #   conv          — main menu + rules/ignore/history
     app.add_handler(preview_conv)
     app.add_handler(copy_conv)
     app.add_handler(login_conv)
+    app.add_handler(login2_conv)
+    app.add_handler(dualcopy_conv)
     app.add_handler(conv)
     app.add_handler(CommandHandler("help", menu_handler.help_cmd))
 
     # Standalone userbot control commands
     for h in copybot_handler.get_extra_handlers():
         app.add_handler(h)
+
+    # /dualcopy companions — standalone, outside the wizard ConversationHandler
+    app.add_handler(CommandHandler("stopdual", dualcopy_handler.stopdual_cmd))
+    app.add_handler(CommandHandler("status2",  dualcopy_handler.status2_cmd))
 
     # Fallback: unknown /commands and plain text outside any conversation
     app.add_handler(MessageHandler(filters.COMMAND, menu_handler.unknown_command))
@@ -204,8 +171,6 @@ def build_app(token: str) -> Application:
     )
 
     # Live forwarder — listens to ALL messages in ALL chats (group 1 runs after conv)
-    # filters.ALL already covers UpdateType.CHANNEL_POSTS so we only need one handler.
-    # Two handlers for the same function would double-forward every channel post.
     app.add_handler(
         MessageHandler(filters.ALL & ~filters.COMMAND, forwarder.handle_forward),
         group=1,

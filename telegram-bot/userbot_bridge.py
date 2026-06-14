@@ -3,6 +3,20 @@ Manages shared Telethon userbot clients (Bot 1 and Bot 2) inside PTB's asyncio e
 
 Bot 1: sessions/userbot   — primary account, used for /login
 Bot 2: sessions/userbot2  — second account, used for /login2 and dual-copy
+
+Auto-reconnect on Railway redeploy
+───────────────────────────────────
+If SESSION_STRING (Bot 1) or SESSION_STRING_2 (Bot 2) is set as a Railway
+environment variable, the bot bootstraps the local SQLite session file from it
+on every cold-start — so the userbot reconnects automatically after each
+redeploy without needing to /login again.
+
+How to enable it:
+  1. Do /login (or /login2) once — the bot prints your SESSION_STRING.
+  2. In Railway → your service → Variables, add:
+       SESSION_STRING   = <the string the bot printed>
+       SESSION_STRING_2 = <the string from /login2>
+  3. That's it. Every future redeploy auto-connects both userbots.
 """
 import asyncio
 import logging
@@ -20,6 +34,49 @@ _FAST_RETRIES = 12
 _FAST_DELAY   = 5
 _SLOW_DELAY   = 30
 
+
+# ── Session bootstrap ──────────────────────────────────────────────────────────
+
+def _bootstrap_session_from_env(slot: int, session_path: str, label: str) -> bool:
+    """
+    Called once at startup before the Telethon connect loop.
+
+    If SESSION_STRING (slot 1) or SESSION_STRING_2 (slot 2) is set in the
+    environment AND the local SQLite session file does not yet exist, this
+    writes the string session to disk so Telethon finds a valid session on
+    its first connect() call — auto-reconnecting after a Railway redeploy.
+
+    If the .session file already exists we leave it alone; a live /login or
+    /login2 always writes a fresh file which takes precedence.
+
+    Returns True if a bootstrap was performed, False otherwise.
+    """
+    env_var     = "SESSION_STRING" if slot == 1 else "SESSION_STRING_2"
+    session_str = os.environ.get(env_var, "").strip()
+    if not session_str:
+        return False
+
+    session_file = session_path + ".session"
+    if os.path.exists(session_file):
+        logger.debug(f"{label}: session file already exists — skipping {env_var} bootstrap")
+        return False
+
+    try:
+        from telethon.sessions import StringSession, SQLiteSession
+        str_sess  = StringSession(session_str)
+        os.makedirs(os.path.dirname(session_path), exist_ok=True)
+        file_sess = SQLiteSession(session_path)
+        file_sess.set_dc(str_sess.dc_id, str_sess.server_address, str_sess.port)
+        file_sess.auth_key = str_sess.auth_key
+        file_sess.save()
+        logger.info(f"{label}: session bootstrapped from {env_var} — will auto-connect")
+        return True
+    except Exception as e:
+        logger.warning(f"{label}: failed to bootstrap session from {env_var}: {e}")
+        return False
+
+
+# ── Connection loop ────────────────────────────────────────────────────────────
 
 async def _connect_loop(bot_data: dict, slot: int = 1) -> None:
     """
@@ -40,6 +97,9 @@ async def _connect_loop(bot_data: dict, slot: int = 1) -> None:
         return
 
     os.makedirs(os.path.join(os.path.dirname(__file__), "sessions"), exist_ok=True)
+
+    # ── Auto-bootstrap from SESSION_STRING env var on first startup ───────────
+    _bootstrap_session_from_env(slot, session, label)
 
     attempt = 0
     while True:

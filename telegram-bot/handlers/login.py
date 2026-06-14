@@ -162,6 +162,12 @@ async def login_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return LOGIN_PHONE
 
     client = bridge.get_client(context.bot_data)
+    if client is None:
+        await update.message.reply_text(
+            "❌ Userbot is still initialising — please wait a few seconds and try again.",
+            reply_markup=_menu_kb(),
+        )
+        return ConversationHandler.END
     try:
         sent = await client.send_code_request(phone)
     except Exception as e:
@@ -484,5 +490,6 @@ def build_login_conv() -> ConversationHandler:
         per_user=True,
         per_message=False,
     )
+
 
 

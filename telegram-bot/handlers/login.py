@@ -7,6 +7,7 @@ Flow:
   → type OTP (5-digit code)
   → (if 2FA) type cloud password
   → userbot bridge marked ready immediately
+  → SESSION_STRING printed so user can save it to Railway Variables
 
 OTP-expired fix
 ───────────────
@@ -58,20 +59,6 @@ def _cleanup(context: ContextTypes.DEFAULT_TYPE):
 
 
 def _where_was_code_sent(sent) -> str:
-    """
-    Return a human-readable string telling the user WHERE to find their OTP.
-
-    Telethon's SentCode.type is one of:
-      SentCodeTypeApp        → delivered to the Telegram app (Saved Messages)
-      SentCodeTypeSms        → delivered as an SMS
-      SentCodeTypeCall       → delivered via automated phone call
-      SentCodeTypeFlashCall  → delivered via flash call (caller hangs up, last digits = code)
-      SentCodeTypeMissedCall → delivered via missed call
-      SentCodeTypeEmailCode  → delivered by email
-
-    Knowing this is critical: if it's SentCodeTypeApp the user must open
-    Telegram → Saved Messages, NOT look in Service Notifications.
-    """
     try:
         type_name = type(sent.type).__name__
     except Exception:
@@ -120,7 +107,6 @@ async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     client = bridge.get_client(context.bot_data)
     if client is None:
-        # Distinguish between "API keys not set" and "still connecting"
         api_id   = os.environ.get("TELEGRAM_API_ID",   "")
         api_hash = os.environ.get("TELEGRAM_API_HASH", "")
         if not api_id or not api_hash:
@@ -181,7 +167,7 @@ async def login_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["login_phone"]         = phone
     context.user_data["login_sent"]          = sent
     context.user_data["login_otp_attempts"]  = 0
-    context.user_data["login_resend_count"]  = 0  # reset on every fresh login
+    context.user_data["login_resend_count"]  = 0
 
     where = _where_was_code_sent(sent)
     await update.message.reply_text(
@@ -197,10 +183,6 @@ async def login_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── OTP ─────────────────────────────────────────────────────────────────────
 
 async def _do_resend(phone: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[bool, int]:
-    """
-    Request a fresh OTP. Returns (success, flood_wait_seconds).
-    flood_wait_seconds > 0 means Telegram asked us to wait before retrying.
-    """
     client = bridge.get_client(context.bot_data)
     try:
         from telethon.errors import FloodWaitError
@@ -217,7 +199,6 @@ async def _do_resend(phone: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[bo
 
 
 async def login_resend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """'Resend code' button — get a fresh phone_code_hash and ask again."""
     query = update.callback_query
     await query.answer("Sending new code…")
 
@@ -264,15 +245,9 @@ async def login_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SessionPasswordNeededError,
         )
 
-        # Pass phone_code_hash explicitly so Telethon never uses a stale one.
         await client.sign_in(phone, code, phone_code_hash=sent.phone_code_hash)
 
     except PhoneCodeExpiredError:
-        # ── OTP-EXPIRED FIX ─────────────────────────────────────────────────
-        # Telegram's server marked this hash as expired (codes last ~2 min).
-        # Limit auto-resends: if we've already done 2 auto-resends, the user
-        # is likely entering an old code from Saved Messages — tell them to
-        # scroll to the very bottom and use /login if still stuck.
         resend_count = context.user_data.get("login_resend_count", 0) + 1
         context.user_data["login_resend_count"] = resend_count
 
@@ -307,8 +282,6 @@ async def login_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return ConversationHandler.END
 
-        # Show CANCEL only (no Resend button) — tapping Resend again immediately
-        # triggers Telegram's flood-wait rate limit on send_code_request.
         sent  = context.user_data.get("login_sent")
         where = _where_was_code_sent(sent) if sent else "your Telegram"
         await update.message.reply_text(
@@ -421,15 +394,54 @@ async def _login_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data["userbot_ready"] = True
     _cleanup(context)
 
+    # ── Export SESSION_STRING ────────────────────────────────────────────────
+    # Generate the session string so the user can save it to Railway Variables
+    # and survive future redeploys without needing to /login again.
+    try:
+        session_string = client.session.save()
+    except Exception as exc:
+        logger.warning("Could not export session string: %s", exc)
+        session_string = None
+
+    # Determine which slot this is (bot_data may already hold userbot2)
+    already_saved = bool(os.environ.get("SESSION_STRING"))
+    already_saved2 = bool(os.environ.get("SESSION_STRING_2"))
+
+    # Figure out the right variable name to suggest
+    # If SESSION_STRING already set in env AND client is userbot2 → SESSION_STRING_2
+    # Simple heuristic: check if bot_data has a second client
+    is_second = context.bot_data.get("userbot2_ready", False)
+    var_name = "SESSION_STRING_2" if is_second else "SESSION_STRING"
+
     await update.message.reply_text(
         f"✅ *Logged in as {name} ({uname})!*\n\n"
-        "All userbot features (copy, sync, history) are now active.\n\n"
-        "Use /menu to get started.",
+        "All userbot features are now active. Use /menu to get started.",
         parse_mode="Markdown",
-        # Pass userbot_ready=True so the menu shows "✅ Userbot Connected"
-        # instead of the stale "🔑 Connect Userbot" label.
         reply_markup=main_menu_keyboard(userbot_ready=True),
     )
+
+    # Send the session string as a separate message
+    if session_string:
+        save_hint = (
+            f"⚠️ `{var_name}` is already set in your environment.\n"
+            "Update it with the new string below if you want to refresh it."
+            if (var_name == "SESSION_STRING" and already_saved) or
+               (var_name == "SESSION_STRING_2" and already_saved2)
+            else
+            f"👇 *Save this to Railway so you never need to /login again after a redeploy:*"
+        )
+
+        await update.message.reply_text(
+            f"🔑 *Your {var_name}*\n\n"
+            f"{save_hint}\n\n"
+            f"`{session_string}`\n\n"
+            "📋 *How to save it:*\n"
+            "1️⃣ Copy the string above (tap & hold → Copy)\n"
+            f"2️⃣ Railway → your service → *Variables* → `+ New Variable`\n"
+            f"3️⃣ Key: `{var_name}` · Value: paste the string\n"
+            "4️⃣ Railway auto-redeploys — userbot connects automatically next time ✅",
+            parse_mode="Markdown",
+        )
     return ConversationHandler.END
 
 

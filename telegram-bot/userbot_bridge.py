@@ -9,6 +9,7 @@ straight away.
 import asyncio
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,10 @@ async def _connect_loop(bot_data: dict) -> None:
             me = await client.get_me()
             bot_data["userbot_client"] = client
             bot_data["userbot_ready"]  = True
+            # Record connect time only on first successful auth (not every reconnect)
+            # so /uptime shows wall-clock time since first login, not last reconnect.
+            if "userbot_connected_at" not in bot_data:
+                bot_data["userbot_connected_at"] = time.time()
             logger.info(f"Userbot bridge connected as {me.first_name} (@{me.username})")
 
             # Stay in the loop and monitor the connection — do NOT return.
